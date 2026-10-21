@@ -227,6 +227,56 @@ class TestCLI(unittest.TestCase):
         r = self.run_cli("paths", EXAMPLE, "--from", "hantu", "--to", "dc01")
         self.assertEqual(r.returncode, 1)
 
+    def test_dot_to_without_from_warns(self):
+        r = self.run_cli("dot", EXAMPLE, "--to", "dc01")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("peringatan", r.stderr)
+        self.assertIn("digraph", r.stdout)
+
+
+class TestAuditFixes(unittest.TestCase):
+    """Regresi temuan audit 2026-10-21."""
+
+    def test_dot_escapes_quotes_and_backslash(self):
+        nodes = {
+            'a"b': {"id": 'a"b', "type": "user"},
+            "c\\d": {"id": "c\\d", "type": "host"},
+        }
+        edges = [{"from": 'a"b', "to": "c\\d", "rel": 'x"y\nz'}]
+        dot = render_dot(nodes, edges)
+        # id ter-escape: tidak ada lagi token mentah yang merusak sintaks
+        self.assertIn('"a\\"b"', dot)
+        self.assertIn('"c\\\\d"', dot)
+        self.assertIn('label="x\\"y\\nz"', dot)
+        self.assertNotIn('"a"b"', dot.replace('\\"', ""))
+        self.assertEqual(dot.count("{"), dot.count("}"))
+
+    def test_tree_no_duplicate_at_depth_limit(self):
+        # X dicapai tepat di batas max_depth lewat dua parent:
+        # sebelum fix, X digambar dua kali sebagai node baru.
+        nodes = {n: {"id": n, "type": "user"} for n in ["r", "A", "B", "X"]}
+        edges = [
+            {"from": "r", "to": "A", "rel": "e"},
+            {"from": "r", "to": "B", "rel": "e"},
+            {"from": "A", "to": "X", "rel": "e"},
+            {"from": "B", "to": "X", "rel": "e"},
+        ]
+        adj = build_graph(nodes, edges)
+        lines = reachable_tree(adj, nodes, "r", max_depth=2)
+        x_lines = [ln for ln in lines if "X [user]" in ln]
+        self.assertEqual(len(x_lines), 2)
+        self.assertEqual(sum("sudah digambar" in ln for ln in x_lines), 1)
+
+    def test_function_default_max_depth_is_8(self):
+        # rantai 7 hop: butuh max_depth >= 7 (default lama 6 gagal)
+        ids = ["n%d" % i for i in range(8)]
+        nodes = {nid: {"id": nid, "type": "user"} for nid in ids}
+        edges = [{"from": ids[i], "to": ids[i + 1], "rel": "e"} for i in range(7)]
+        adj = build_graph(nodes, edges)
+        path = shortest_path(adj, ids[0], ids[7])
+        self.assertIsNotNone(path)
+        self.assertEqual(len(path) - 1, 7)
+
 
 if __name__ == "__main__":
     unittest.main()

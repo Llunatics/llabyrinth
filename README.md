@@ -96,7 +96,12 @@ attacker
 python3 -m unittest discover -s tests
 ```
 
-27 tes: validasi skema, BFS/DFS path, deteksi cycle, render DOT, dan end-to-end CLI.
+31 tes: validasi skema, BFS/DFS path, deteksi cycle, render DOT, end-to-end CLI, plus regresi audit (escaping DOT, dedup tree di batas depth, default max-depth).
+
+## Catatan perilaku
+
+- `dot --to T` tanpa `--from` mencetak peringatan ke stderr dan mengabaikan sorotan (sorotan jalur butuh keduanya).
+- Karakter `"`, `\`, dan newline di dalam id node / label relasi di-escape otomatis supaya output DOT tetap valid.
 
 ## Batasan
 

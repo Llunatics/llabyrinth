@@ -22,7 +22,7 @@ import json
 import os
 import sys
 
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 
 # ---------------------------------------------------------------------------
 # Model
@@ -122,7 +122,7 @@ def build_graph(nodes, edges):
 # Analisis path
 # ---------------------------------------------------------------------------
 
-def shortest_path(adj, start, goal, max_depth=6):
+def shortest_path(adj, start, goal, max_depth=8):
     """BFS: path terpendek start -> goal.
 
     Return list [(node, rel_masuk), ...] dimulai dari (start, None),
@@ -147,7 +147,7 @@ def shortest_path(adj, start, goal, max_depth=6):
     return None
 
 
-def all_paths(adj, start, goal, max_depth=6):
+def all_paths(adj, start, goal, max_depth=8):
     """Semua simple path (tanpa node berulang) start -> goal, maks max_depth hop."""
     results = []
 
@@ -167,11 +167,11 @@ def all_paths(adj, start, goal, max_depth=6):
             on_stack.remove(dst)
 
     dfs(start, [(start, None)], {start})
-    # Singkirkan path trivial bila start == goal ikut terdaftar dua kali
+    # start == goal -> satu path trivial 0 hop, bukan duplikat.
     return sorted(results, key=lambda p: (len(p), [n for n, _ in p]))
 
 
-def reachable_tree(adj, nodes, start, max_depth=6):
+def reachable_tree(adj, nodes, start, max_depth=8):
     """BFS layered tree dari start. Return list baris ASCII tree."""
     lines = []
     ntype = nodes[start]["type"]
@@ -191,8 +191,8 @@ def reachable_tree(adj, nodes, start, max_depth=6):
                 lines.append("%s%s%s [%s]  (%s)  … sudah digambar" % (prefix, branch, dst, dtype, rel))
             else:
                 lines.append("%s%s%s [%s]  (%s)" % (prefix, branch, dst, dtype, rel))
+                visited_global.add(dst)  # tandai walau tidak direkursi (batas depth)
                 if depth + 1 < max_depth:
-                    visited_global.add(dst)
                     on_stack.add(dst)
                     walk(dst, prefix + cont, depth + 1, on_stack)
                     on_stack.discard(dst)
@@ -225,19 +225,39 @@ _DOT_SHAPES = {
 }
 
 
+def _dot_escape(text):
+    """Escape string untuk label/id DOT: backslash, quote, newline."""
+    return (
+        text.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+    )
+
+
 def render_dot(nodes, edges, highlight=()):
-    """DOT (Graphviz). highlight = set of (from, to) edge yang diwarnai merah."""
+    """DOT (Graphviz). highlight = set of (from, to) edge yang diwarnai merah.
+
+    Semua id/type/rel di-escape supaya id yang mengandung quote atau
+    backslash tidak merusak sintaks DOT.
+    """
     hl = set(highlight)
     lines = ["digraph attack_paths {", '  rankdir=LR;', '  node [fontname="monospace"];']
     for nid in sorted(nodes):
         ntype = nodes[nid]["type"]
         shape = _DOT_SHAPES.get(ntype, "ellipse")
-        lines.append('  "%s" [shape=%s, label="%s\\n[%s]"];' % (nid, shape, nid, ntype))
+        lines.append(
+            '  "%s" [shape=%s, label="%s\\n[%s]"];'
+            % (_dot_escape(nid), shape, _dot_escape(nid), _dot_escape(ntype))
+        )
     for e in edges:
-        attrs = 'label="%s"' % e["rel"]
+        attrs = 'label="%s"' % _dot_escape(e["rel"])
         if (e["from"], e["to"]) in hl:
             attrs += ", color=red, penwidth=2.5, fontcolor=red"
-        lines.append('  "%s" -> "%s" [%s];' % (e["from"], e["to"], attrs))
+        lines.append(
+            '  "%s" -> "%s" [%s];'
+            % (_dot_escape(e["from"]), _dot_escape(e["to"]), attrs)
+        )
     lines.append("}")
     return "\n".join(lines) + "\n"
 
@@ -322,6 +342,9 @@ def cmd_dot(args):
         return _die(exc)
     adj = build_graph(nodes, edges)
     highlight = set()
+    if args.target and not args.source:
+        print("llabyrinth: peringatan: --to diabaikan tanpa --from "
+              "(sorotan jalur butuh keduanya)", file=sys.stderr)
     if args.source and args.target:
         if args.source not in nodes:
             return _die("node --from %r tidak ada di infra" % args.source)
