@@ -1,0 +1,1 @@
+{"description":"Dev-only test tooling for llabyrinth. llabyrinth itself is stdlib-only Python; jsdom is used solely by tests/web-smoke.js to click through a generated HTML export.","devDependencies":{"jsdom":"^26.1.0"},"name":"llabyrinth-tests","private":true}
