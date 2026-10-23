@@ -1,5 +1,63 @@
 # Audit log — llabyrinth
 
+## v1.1.0 design iteration 2 (2026-10-23) — responsive / mobile pass
+
+The redesigned export was reviewed on a phone (portrait) and still
+failed there — this iteration fixes the responsive behaviour. Only
+`WEB_TEMPLATE` changed; behaviour, data flow, and the security model
+are untouched.
+
+What was wrong and what changed:
+
+- **Miniature graph on narrow screens.** The structured layout always
+  packed hosts 3-per-row inside ~1150px-wide subnet rows, and `fit()`
+  scaled to the *height* of the tall result — on a 390px phone the
+  whole topology shrank to ~163px wide with illegible labels. Now the
+  layout adapts to the real stage width (hosts per subnet: 3 / 2 / 1
+  columns at ≥1020 / ≥600 / <600px; infra-JSON columns stack
+  vertically under 600px), and when the content is taller than the
+  stage on a narrow screen, `fit()` scales to **fill the width**
+  (up to 1.25×) and top-aligns — the rest of the graph is one pan
+  away. Measured result at 390×844: graph 315px wide in a 390px
+  stage, host chips render 260×50px (labels ≈14px effective).
+- **Legend/footer overlap (real CSS bug).** The legend (bottom-left)
+  and the credit line (bottom-right) were both absolutely positioned
+  inside the graph area and collided into garbled overlapping text on
+  narrow widths. Both now live in a `.graph-foot` bar in normal flow
+  below the stage; the row wraps instead of ever overlapping.
+- **Dead details block on mobile.** With nothing selected, the detail
+  panel was a huge empty black block eating the bottom half of the
+  phone screen. Under 900px the layout stacks (graph on top, details
+  below); with no selection the panel collapses to a slim
+  "Tap a node for details" bar (~42px), and on selection it becomes a
+  section below the graph (max-height 48%, own scroll). Selecting a
+  node also nudges the view so the node stays visible after the
+  panel resizes the stage. Desktop keeps the right-side panel.
+- **Header collisions.** The top bar's tools row had a content-based
+  minimum size that forced the page to 496px wide on a 390px screen
+  (horizontal overflow), the mono title could not ellipsize (missing
+  `min-width: 0`), and the search field was squeezed while
+  "Fit view" wrapped mid-label. The bar now wraps cleanly: brand row,
+  stats + Fit button row, full-width search row on small screens;
+  buttons never wrap mid-label.
+- **Touch.** Pinch-zoom (two-pointer) and +/− zoom buttons added;
+  the graph uses `touch-action: none` so pointer gestures are not
+  hijacked by the browser. Drags no longer select header/strip text.
+
+Verification: full unit suite **61/61 green** and jsdom real-click
+smoke **21/21 green** (unchanged selectors; all XSS assertions hold).
+On top of that, headless-Chromium screenshots at **both** viewports —
+phone portrait **390×844** and desktop **1440×900** — in three states
+each (initial, host selected, port on the attack path selected) were
+**visually reviewed**, and geometry was asserted programmatically:
+no legend/credit overlap at either width, no horizontal overflow
+(`scrollWidth == clientWidth`), the SVG fills its stage, and real
+clicks (with user-style pans to bring off-screen nodes into view)
+landed in every state with zero JS errors. Two defects found during
+this verification — the first `fit()` width branch not actually
+applying the width scale, and the flex min-content overflow — were
+fixed and re-verified before this note was written.
+
 ## v1.1.0 design overhaul (2026-10-23) — web export visual redesign
 
 The v1.1.0 web export's visuals were rejected by the user as cluttered
