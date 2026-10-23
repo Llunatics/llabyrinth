@@ -103,6 +103,7 @@ dot -Tpng lab.dot -o lab.png   # butuh Graphviz terinstal
 `web` menghasilkan SATU file HTML: semua CSS/JS inline dan model tertanam sebagai JSON — tanpa request eksternal sama sekali, jadi file-nya bisa dibuka dari disk dalam keadaan offline. Isinya:
 
 - Topologi subnet → host → port untuk model impor Nmap (untuk infra JSON: graf node/edge apa adanya), dengan pan/zoom, geser node, dan pencarian (IP, hostname, port, service).
+- Tata letak terstruktur (bukan force-directed): subnet digambar sebagai kontainer berlabel dengan host tersusun grid di dalamnya dan port sebagai titik kecil di bawah host; model infra JSON digambar sebagai kolom per jenis node. Tema gelap netral — aksen lime hanya untuk seleksi, merah hanya untuk jalur serangan.
 - Klik node → panel detail: tabel port lengkap (tanpa batas tampilan), banner service, OS guess, hostname, MAC/vendor, dan output script NSE.
 - Bila `--from/--to` diberikan dan jalurnya ada, jalur serangan disorot merah di graf dan diringkas di strip atas.
 - Semua teks hasil scan dirender sebagai teks inert (`textContent` + JSON yang di-escape) — banner jahat dari host yang di-scan tidak bisa menyuntikkan markup.

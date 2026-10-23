@@ -1,5 +1,51 @@
 # Audit log — llabyrinth
 
+## v1.1.0 design overhaul (2026-10-23) — web export visual redesign
+
+The v1.1.0 web export's visuals were rejected by the user as cluttered
+("jelek banget") and were redesigned against the house principle —
+**clean, minimalist, modern**. Behaviour, data flow, and the security
+model are unchanged; only `WEB_TEMPLATE` (CSS + layout/render JS) was
+rewritten.
+
+What changed:
+
+- **Palette**: near-black neutral canvas (`#0a0a0b`) and panels, 1px
+  low-contrast hairlines (`#1e1e22`/`#26262b`), neutral grays for all
+  node states. The old rainbow fills (lime subnet circles, sky-blue
+  hosts, green/yellow/red port dots) are gone. Lime (`#a3e635`) now
+  appears only as the selection ring (and the tiny brand mark /
+  open-state dot); red (`#f87171`) is reserved for the attack path.
+- **Layout**: the circular force-style sprawl is replaced by a
+  deterministic structured layout — subnets are subtle outline
+  containers with a small uppercase mono CIDR label and host count,
+  hosts are quiet neutral chips (hostname + IP sub-line) arranged in a
+  grid inside their subnet, ports are small muted dots with tiny mono
+  numbers in rows under their host. Infra-JSON models render as
+  labelled columns per node kind. Structural (containment) edges are
+  nearly invisible; relationship edges are hairline gray.
+- **Chrome**: slim top bar (brand mark + mono scan title left; mono
+  stats, quiet search field, ghost "Fit view" button right), a thin
+  path summary strip, a right detail panel with hairline-divided
+  sections and a fixed-layout port table (state shown as a small dot +
+  text), a minimal legend, and a subtle dot-grid canvas texture.
+  Typography: Inter/system sans for UI, monospace for IPs, banners,
+  and other scan data.
+- **Hit targets**: port dots gained an invisible 12px-radius hit area —
+  the first screenshot round (real Chromium clicks via Playwright)
+  showed the bare 4px dot's bbox centre falls on unpainted space and
+  the subnet container intercepted the click. Real-mouse clicking a
+  port now works, not just synthetic events.
+
+Verification: full unit suite **61/61 green** and jsdom real-click
+smoke **21/21 green** (including all XSS payload assertions — payloads
+still render only as inert text, exactly 2 script tags, no injected
+elements). On top of that, the redesigned export was rendered in
+headless Chromium at 1440×900 and **the screenshots were visually
+reviewed** in three states (initial graph, host selected with detail
+panel, port on the attack path) across two design iterations; the
+infra-JSON column layout was screenshot-checked too.
+
 ## v1.1.0 (2026-10-23) — Nmap importer + web export
 
 A staged self-audit of the 1.1.0 feature work (the 1.0 audit lives in the
