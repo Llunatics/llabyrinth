@@ -1,5 +1,60 @@
 # Audit log — llabyrinth
 
+## Audit Sabtu 2026-10-24 — ronde fungsional + adversarial (independen)
+
+Ronde audit terjadwal untuk repo Web Jumat (skema 3 build/minggu).
+Basis: fresh clone dari GitHub (`1c29ff4`), bukan salinan kerja lokal.
+Regresi: **64/64 unit tests** hijau (61 bawaan + 3 regresi baru) dan
+**21/21 jsdom real-click smoke** hijau di salinan fresh.
+
+Kasus adversarial baru yang diuji (belum ada di ronde Jumat):
+
+1. **Terminal injection via infra JSON: TEMUAN, diperbaiki.** Id node
+   berisi `\x1b[31m` + `\nFAKE: owned` tercetak mentah oleh `tree`
+   (dan `paths` via `render_path`) — ANSI escape aktif + baris palsu
+   bisa disuntikkan ke terminal. Jalur impor Nmap aman secara
+   struktural (karakter kontrol ilegal membuat XML tidak valid ->
+   `InfraError` bersih; tab/newline dinormalisasi expat jadi spasi).
+   Fix: helper `_term_safe()` — karakter kontrol C0/DEL dibuang,
+   newline -> spasi agar layout tree satu baris utuh — dipakai di
+   `reachable_tree`, `render_path`, catatan `validate`, dan warning
+   stderr `web`. 3 tes regresi ditambahkan. Severity: rendah
+   (infra JSON ditulis user sendiri = self-injection), tapi kelas
+   yang sama diperbaiki di audit llumen, jadi disamakan di sini.
+2. **`</script>` breakout di blok JSON model: AMAN.** Payload
+   `</script><script>alert(9)</script>` sebagai service product:
+   `_json_for_html` meng-escape `<`/`>`/`&` jadi `\uXXXX`, sehingga
+   tidak ada literal `</script>` di dalam blok
+   `<script type="application/json">` (tepat 2 penutup `</script>`
+   di seluruh file) dan jsdom mengeksekusi halaman tanpa error
+   dengan tepat 2 elemen script — payload hanya teks inert.
+3. **Token `__MODEL_JSON__` di judul: AMAN.** `args` nmaprun berisi
+   literal `__MODEL_JSON__` + `"injeksi"` -> `<title>` hanya teks
+   ter-escape, tidak ada JSON model yang bocor (partition, bukan
+   replace berantai — regresi ronde-2 Jumat tetap berlaku).
+4. **Model kosong di browser: AMAN.** Ekspor `web` dari `<nmaprun/>`
+   kosong dibuka di jsdom: nol JS error (`fit()` sudah guard
+   `Math.max(1, …)`), nol node ter-render.
+5. **portid aneh: AMAN.** `portid="abc"/"-1"/"0"/"70000"` diimpor
+   tanpa crash (`"abc"` -> `None`, tampil `?/tcp`); `tree`/`paths`
+   jalan normal.
+6. **U+2028 di hostname: AMAN.** Lolos JSON round-trip
+   (`\u2028` ter-escape lalu ter-parse kembali utuh), tampil sebagai
+   teks, nol JS error.
+7. **`--from-nmap` menunjuk direktori: AMAN.** Error satu baris
+   bersih, tanpa traceback.
+
+Perubahan: commit `4f82302` ("audit: netralkan karakter kontrol di
+output terminal tree/paths/validate; 64/64 tes"), ter-push dan
+remote == lokal. README: jumlah tes 61 -> 64.
+
+### Verdict ronde ini
+
+v1.1.0 tetap solid: satu-satunya temuan nyata adalah injeksi
+terminal via infra JSON buatan tangan (severity rendah), sudah
+diperbaiki dengan regresi. Seluruh vektor XSS/parse/edge-case baru
+yang diuji lolos tanpa temuan.
+
 ## v1.1.0 design iteration 2 (2026-10-23) — responsive / mobile pass
 
 The redesigned export was reviewed on a phone (portrait) and still
