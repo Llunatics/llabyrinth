@@ -31,6 +31,7 @@ interaktif (offline, tanpa request eksternal):
 import argparse
 import json
 import os
+import re
 import sys
 import xml.etree.ElementTree as ET
 
@@ -507,7 +508,7 @@ def reachable_tree(adj, nodes, start, max_depth=8):
     """BFS layered tree dari start. Return list baris ASCII tree."""
     lines = []
     ntype = nodes[start]["type"]
-    lines.append("%s [%s]" % (start, ntype))
+    lines.append("%s [%s]" % (_term_safe(start), _term_safe(ntype)))
     visited_global = {start}
 
     def walk(node, prefix, depth, on_stack):
@@ -517,12 +518,13 @@ def reachable_tree(adj, nodes, start, max_depth=8):
             branch = "└── " if last else "├── "
             cont = "    " if last else "│   "
             dtype = nodes[dst]["type"]
+            d, t, r = _term_safe(dst), _term_safe(dtype), _term_safe(rel)
             if dst in on_stack:
-                lines.append("%s%s%s [%s]  (%s)  ↩ cycle" % (prefix, branch, dst, dtype, rel))
+                lines.append("%s%s%s [%s]  (%s)  ↩ cycle" % (prefix, branch, d, t, r))
             elif dst in visited_global:
-                lines.append("%s%s%s [%s]  (%s)  … sudah digambar" % (prefix, branch, dst, dtype, rel))
+                lines.append("%s%s%s [%s]  (%s)  … sudah digambar" % (prefix, branch, d, t, r))
             else:
-                lines.append("%s%s%s [%s]  (%s)" % (prefix, branch, dst, dtype, rel))
+                lines.append("%s%s%s [%s]  (%s)" % (prefix, branch, d, t, r))
                 visited_global.add(dst)  # tandai walau tidak direkursi (batas depth)
                 if depth + 1 < max_depth:
                     on_stack.add(dst)
@@ -538,9 +540,9 @@ def render_path(path):
     out = []
     for i, (node, rel) in enumerate(path):
         if i == 0:
-            out.append(node)
+            out.append(_term_safe(node))
         else:
-            out.append("  --[%s]--> %s" % (rel, node))
+            out.append("  --[%s]--> %s" % (_term_safe(rel), _term_safe(node)))
     return "\n".join(out)
 
 
@@ -555,6 +557,18 @@ _DOT_SHAPES = {
     "group": "diamond",
     "service": "octagon",
 }
+
+
+_TERM_UNSAFE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def _term_safe(text):
+    """String aman untuk output terminal: karakter kontrol (ANSI escape,
+    dsb.) dari id/label tak tepercaya dibuang, newline -> spasi supaya
+    layout tree satu baris tetap utuh dan tidak ada baris palsu yang
+    bisa disuntikkan ke terminal."""
+    s = str(text).replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+    return _TERM_UNSAFE.sub("", s)
 
 
 def _dot_escape(text):
@@ -1598,7 +1612,7 @@ def cmd_web(args):
         return err
     nodes, edges = model["nodes"], model["edges"]
     for w in model.get("warnings", []):
-        print("llabyrinth: catatan: %s" % w, file=sys.stderr)
+        print("llabyrinth: catatan: %s" % _term_safe(w), file=sys.stderr)
     adj = build_graph(nodes, edges)
     path = None
     if args.target and not args.source:
@@ -1646,7 +1660,7 @@ def cmd_validate(args):
     if problems:
         print("valid, tapi ada catatan:")
         for p in problems:
-            print("  - %s" % p)
+            print("  - %s" % _term_safe(p))
     else:
         print("valid: %d node, %d edge, tidak ada catatan." % (len(nodes), len(edges)))
     return 0

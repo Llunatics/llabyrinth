@@ -11,6 +11,7 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from llabyrinth import (  # noqa: E402
     InfraError,
+    _term_safe,
     all_paths,
     build_graph,
     load_infra,
@@ -266,6 +267,33 @@ class TestAuditFixes(unittest.TestCase):
         x_lines = [ln for ln in lines if "X [user]" in ln]
         self.assertEqual(len(x_lines), 2)
         self.assertEqual(sum("sudah digambar" in ln for ln in x_lines), 1)
+
+    def test_term_safe_strips_control_chars(self):
+        # Karakter kontrol (ESC, newline, NUL, DEL, BEL) dari id tak
+        # tepercaya -> netral; sisa teks '[31m' tanpa ESC itu inert.
+        self.assertEqual(_term_safe("h\x1b[31mRED\x1b[0m"), "h[31mRED[0m")
+        self.assertEqual(_term_safe("a\nFAKE: owned"), "a FAKE: owned")
+        self.assertEqual(_term_safe("x\x00y\x7fz"), "xyz")
+        self.assertEqual(_term_safe("biasa-123"), "biasa-123")
+
+    def test_tree_output_has_no_raw_control_chars(self):
+        # id berisi ESC + newline: tree satu baris per node, tanpa escape mentah
+        evil = "h\x1b[31mRED\x1b[0m\nFAKE: owned"
+        nodes = {"r": {"id": "r", "type": "host"},
+                 evil: {"id": evil, "type": "host"}}
+        adj = build_graph(nodes, [{"from": "r", "to": evil, "rel": "scans"}])
+        for ln in reachable_tree(adj, nodes, "r"):
+            self.assertNotIn("\x1b", ln)
+            self.assertNotIn("\n", ln)
+        self.assertTrue(any("h[31mRED[0m FAKE: owned [host]" in ln
+                            for ln in reachable_tree(adj, nodes, "r")))
+
+    def test_render_path_neutralises_control_chars(self):
+        evil = "n\x1b[2K\nINJEKSI"
+        text = render_path([("r", ""), (evil, "rel\x07x")])
+        self.assertNotIn("\x1b", text)
+        self.assertEqual(text.count("\n"), 1)  # hanya pemisah baris path
+        self.assertIn("n[2K INJEKSI", text)
 
     def test_function_default_max_depth_is_8(self):
         # rantai 7 hop: butuh max_depth >= 7 (default lama 6 gagal)

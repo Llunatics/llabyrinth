@@ -137,7 +137,7 @@ attacker
 python3 -m unittest discover -s tests
 ```
 
-61 tes: validasi skema, BFS/DFS path, deteksi cycle, render DOT, end-to-end CLI, regresi audit 1.0 (escaping DOT, dedup tree di batas depth, default max-depth), plus suite 1.1.0 — impor Nmap (host down, IPv6, port filtered/closed, merge MAC, XML rusak/bukan Nmap, XXE, `<table>` bersarang dalam), ekspor web (overlay jalur, escaping JSON, batas node port), dan regresi audit 1.1.0.
+64 tes: validasi skema, BFS/DFS path, deteksi cycle, render DOT, end-to-end CLI, regresi audit 1.0 (escaping DOT, dedup tree di batas depth, default max-depth), plus suite 1.1.0 — impor Nmap (host down, IPv6, port filtered/closed, merge MAC, XML rusak/bukan Nmap, XXE, `<table>` bersarang dalam), ekspor web (overlay jalur, escaping JSON, batas node port), regresi audit 1.1.0, dan sanitasi karakter kontrol untuk output terminal (`tree`/`paths`/`validate`).
 
 Smoke test klik-sungguhan untuk ekspor web (jsdom, hanya untuk tes — tool-nya sendiri tetap stdlib-only):
 
