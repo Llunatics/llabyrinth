@@ -144,6 +144,25 @@ class TestImportNmap(unittest.TestCase):
         path = shortest_path(adj, "192.168.1.0/24", "10.0.0.0/24")
         self.assertIsNotNone(path)
 
+    def test_extraports_non_numeric_count_skipped(self):
+        # Regresi audit Minggu 2026-10-25: count="abc" sempat meledak
+        # jadi ValueError mentah (traceback), bukan error bersih.
+        xml = (
+            '<nmaprun scanner="nmap" version="7.94">'
+            '<host><status state="up" reason="arp"/>'
+            '<address addr="10.9.9.1" addrtype="ipv4"/>'
+            '<ports><extraports state="closed" count="abc"/>'
+            '<extraports state="filtered" count="42"/>'
+            '<port protocol="tcp" portid="80"><state state="open" reason="s"/>'
+            '<service name="http"/></port></ports></host>'
+            '</nmaprun>'
+        )
+        m = import_nmap(write_tmp(xml))
+        det = m["details"]["10.9.9.1"]
+        self.assertEqual(det["extraPorts"],
+                         [{"state": "filtered", "count": 42}])
+        self.assertIn("10.9.9.1:80/tcp", m["nodes"])
+
     def test_malformed_xml_is_clean_error(self):
         p = write_tmp("<nmaprun><host><status state='up'")
         with self.assertRaises(InfraError):

@@ -306,5 +306,66 @@ class TestAuditFixes(unittest.TestCase):
         self.assertEqual(len(path) - 1, 7)
 
 
+class TestSundayAudit(unittest.TestCase):
+    """Regresi temuan audit Minggu 2026-10-25 (pendalaman ekstra v1.1.0)."""
+
+    def run_cli(self, *args):
+        return subprocess.run(
+            [sys.executable, BIN, *args],
+            capture_output=True, text=True, timeout=30,
+        )
+
+    def _clique(self, n):
+        nodes = {f"n{i}": {"id": f"n{i}", "type": "host"} for i in range(n)}
+        edges = [{"from": f"n{i}", "to": f"n{j}", "rel": "ssh"}
+                 for i in range(n) for j in range(n) if i != j]
+        return build_graph(nodes, edges)
+
+    def test_all_paths_limit_truncates_exactly(self):
+        # K5: n0->n4 punya 1 + 3 + 6 + 6 = 16 simple path (maks 8 hop).
+        adj = self._clique(5)
+        full = all_paths(adj, "n0", "n4")
+        self.assertEqual(len(full), 16)
+        self.assertFalse(full.truncated)
+        capped = all_paths(adj, "n0", "n4", limit=5)
+        self.assertEqual(len(capped), 5)
+        self.assertTrue(capped.truncated)
+        # Cap tepat di jumlah total -> TIDAK terpotong (flag eksak).
+        exact = all_paths(adj, "n0", "n4", limit=16)
+        self.assertEqual(len(exact), 16)
+        self.assertFalse(exact.truncated)
+
+    def test_all_paths_limit_cli_warns(self):
+        # Graf diamond r->A/B->t: 2 path; --limit 1 -> 1 path + warning.
+        diamond = {"nodes": [{"id": n, "type": "user"}
+                              for n in ["r", "A", "B", "t"]],
+                   "edges": [{"from": "r", "to": "A", "rel": "e"},
+                             {"from": "r", "to": "B", "rel": "e"},
+                             {"from": "A", "to": "t", "rel": "e"},
+                             {"from": "B", "to": "t", "rel": "e"}]}
+        with tempfile.NamedTemporaryFile("w", suffix=".json",
+                                         delete=False) as fh:
+            json.dump(diamond, fh)
+            path = fh.name
+        try:
+            r = self.run_cli("paths", path, "--from", "r",
+                             "--to", "t", "--all", "--limit", "1")
+        finally:
+            os.unlink(path)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("dibatasi 1 path pertama", r.stderr)
+        self.assertIn("path 1", r.stdout)
+        self.assertNotIn("path 2", r.stdout)
+
+    def test_dot_strips_control_chars(self):
+        evil = "h\x1b[31mRED\x1b[0m\nFAKE"
+        nodes = {evil: {"id": evil, "type": "host"},
+                 "b": {"id": "b", "type": "host"}}
+        dot = render_dot(nodes, [ {"from": evil, "to": "b", "rel": "r\x07x"}])
+        self.assertNotIn("\x1b", dot)
+        self.assertNotIn("\x07", dot)
+        self.assertIn("h[31mRED[0m\\nFAKE", dot)  # newline jadi escape \n
+
+
 if __name__ == "__main__":
     unittest.main()

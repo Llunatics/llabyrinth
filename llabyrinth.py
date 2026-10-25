@@ -266,10 +266,15 @@ def _host_record(host_el):
     ports_el = host_el.find("ports")
     if ports_el is not None:
         ports = [_port_model(p) for p in ports_el.findall("port")]
-        extra_ports = [
-            {"state": e.get("state", ""), "count": int(e.get("count", "0") or 0)}
-            for e in ports_el.findall("extraports")
-        ]
+        for e in ports_el.findall("extraports"):
+            # count bukan angka ("abc") tidak boleh meledak jadi
+            # ValueError mentah: entri itu dilewati, seperti port
+            # tanpa portid — extraports hanya info ringkasan.
+            try:
+                count = int(e.get("count", "0") or 0)
+            except (TypeError, ValueError):
+                continue
+            extra_ports.append({"state": e.get("state", ""), "count": count})
     os_matches = []
     os_el = host_el.find("os")
     if os_el is not None:
@@ -480,15 +485,35 @@ def shortest_path(adj, start, goal, max_depth=8):
     return None
 
 
-def all_paths(adj, start, goal, max_depth=8):
-    """Semua simple path (tanpa node berulang) start -> goal, maks max_depth hop."""
-    results = []
+class PathResults(list):
+    """Hasil all_paths: list biasa + flag truncated bila cap limit tercapai."""
+
+    truncated = False
+
+
+def all_paths(adj, start, goal, max_depth=8, limit=None):
+    """Semua simple path (tanpa node berulang) start -> goal, maks max_depth hop.
+
+    limit: cap jumlah path (None = tanpa batas). Tanpa cap, graf padat
+    meledak kombinatorial — clique 12 node menghasilkan 792.101 path /
+    214 MB output — jadi CLI membatasi default dan pemanggil bisa
+    menaikkan/mematikan cap lewat --limit. Sorting tetap terpendek dulu.
+    Flag truncated eksak: enumerasi berjalan sampai limit+1 path, jadi
+    truncated=True hanya bila benar-benar ada path ke-(limit+1). Bila
+    terpotong, urutan tetap terpendek-dulu di antara path yang sempat
+    ditemukan (bukan jaminan N path terpendek global).
+    """
+    results = PathResults()
 
     def dfs(node, path, on_stack):
+        if results.truncated:
+            return
         if len(path) - 1 > max_depth:
             return
         if node == goal:
             results.append(list(path))
+            if limit is not None and len(results) > limit:
+                results.truncated = True
             return
         for dst, rel in adj.get(node, []):
             if dst in on_stack:
@@ -501,7 +526,12 @@ def all_paths(adj, start, goal, max_depth=8):
 
     dfs(start, [(start, None)], {start})
     # start == goal -> satu path trivial 0 hop, bukan duplikat.
-    return sorted(results, key=lambda p: (len(p), [n for n, _ in p]))
+    ordered_all = sorted(results, key=lambda p: (len(p), [n for n, _ in p]))
+    if results.truncated:
+        ordered_all = ordered_all[:limit]
+    ordered = PathResults(ordered_all)
+    ordered.truncated = results.truncated
+    return ordered
 
 
 def reachable_tree(adj, nodes, start, max_depth=8):
@@ -572,13 +602,18 @@ def _term_safe(text):
 
 
 def _dot_escape(text):
-    """Escape string untuk label/id DOT: backslash, quote, newline."""
-    return (
+    """Escape string untuk label/id DOT: backslash, quote, newline.
+
+    Sisa karakter kontrol (ANSI escape dsb.) dibuang setelah escaping,
+    supaya id tak tepercaya tidak menyuntikkan byte mentah ke file DOT
+    — kelas yang sama dengan injeksi terminal di tree/paths."""
+    s = (
         text.replace("\\", "\\\\")
         .replace('"', '\\"')
         .replace("\n", "\\n")
         .replace("\r", "\\r")
     )
+    return _TERM_UNSAFE.sub("", s)
 
 
 def render_dot(nodes, edges, highlight=()):
@@ -1528,7 +1563,14 @@ def cmd_paths(args):
         return _die("node --to %r tidak ada di infra" % args.target)
 
     if args.all:
-        paths = all_paths(adj, args.source, args.target, args.max_depth)
+        if args.limit is not None and args.limit < 0:
+            return _die("--limit tidak boleh negatif (0 = tanpa batas)")
+        limit = None if args.limit == 0 else args.limit
+        paths = all_paths(adj, args.source, args.target, args.max_depth, limit)
+        if getattr(paths, "truncated", False):
+            print("llabyrinth: peringatan: hasil --all dibatasi %d path "
+                  "pertama (pakai --limit lebih besar atau 0 untuk tanpa "
+                  "batas)" % args.limit, file=sys.stderr)
         if not paths:
             print("tidak ada path %s -> %s (maks %d hop)" % (args.source, args.target, args.max_depth))
             return 2
@@ -1694,6 +1736,7 @@ def build_parser():
     sp.add_argument("--from", dest="source", required=True, help="node awal (titik masuk attacker)")
     sp.add_argument("--to", dest="target", required=True, help="node target")
     sp.add_argument("--all", action="store_true", help="tampilkan SEMUA simple path, bukan cuma tercepat")
+    sp.add_argument("--limit", type=int, default=10000, help="(--all) maks path yang ditampilkan (default 10000; 0 = tanpa batas)")
     sp.add_argument("--max-depth", type=int, default=8, help="maks hop (default 8)")
     sp.add_argument("--json", action="store_true", help="output JSON")
     sp.set_defaults(func=cmd_paths)
