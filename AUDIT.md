@@ -1,5 +1,60 @@
 # Audit log — llabyrinth
 
+## Audit Minggu 2026-10-25 — pendalaman ekstra (verdict Sabtu sudah final)
+
+Ronde lanjutan untuk repo Web Jumat yang sama (skema 3 build/minggu:
+Sabtu = ronde fungsional + adversarial, Minggu = fresh-copy re-run +
+kasus baru). Basis: fresh clone dari GitHub (`8c0a321`), bukan salinan
+kerja lokal. Regresi: **68/68 unit tests** hijau (64 bawaan + 4 regresi
+baru) dan **jsdom real-click smoke** hijau di salinan fresh.
+
+Kasus adversarial/perf baru yang diuji:
+
+1. **`paths --all` meledak kombinatorial: TEMUAN, diperbaiki.** Graf
+   clique 12 node tanpa cap menghasilkan **792.101 path / 214 MB
+   stdout dalam 36,7 detik** — dan clique yang sedikit lebih besar
+   praktis tidak pernah selesai. Fix: `all_paths()` menerima `limit`
+   dan CLI `--limit` default **10.000** (0 = tanpa batas); bila
+   terpotong, peringatan jelas ke stderr. Flag `truncated` dibuat
+   eksak (enumerasi berjalan sampai limit+1, jadi warning hanya muncul
+   bila benar-benar ada path ke-(limit+1); cap tepat di jumlah total
+   tidak memicu warning). Verifikasi sesudah fix: clique 12 selesai
+   0,27 detik / 10.000 path + warning; `--limit 0` di clique 8 tetap
+   mengembalikan seluruh 1.957 path tanpa warning.
+2. **Karakter kontrol mentah di output DOT: TEMUAN, diperbaiki.** Id
+   berisi `\x1b[31m` lolos ke file DOT apa adanya (kelas yang sama
+   dengan injeksi terminal yang diperbaiki Sabtu, hanya jalur
+   keluarnya DOT). Fix: `_dot_escape()` membuang sisa karakter
+   kontrol C0/DEL setelah escaping quote/backslash/newline; tes
+   regresi memastikan tidak ada byte `\x1b`/`\x07` di output dan
+   newline tetap jadi escape `\n`.
+3. **`extraports` ber-count bukan angka: TEMUAN, diperbaiki.**
+   `<extraports count="abc"/>` membuat importer crash dengan
+   `ValueError` mentah (traceback), bukan error bersih — satu-satunya
+   `int()` tanpa pelindung di jalur impor (portid sudah dilindungi,
+   uptime sudah dilindungi). Fix: entri `extraports` ber-count tak
+   ter-parse dilewati, konsisten dengan toleransi port tanpa portid;
+   entri valid di file yang sama tetap tercatat. Tes regresi
+   memastikan impor sukses + `extraPorts` hanya berisi entri valid.
+4. **Klaim perf scan besar: TERVERIFIKASI.** Scan sintetis 500 host ×
+   10 port: impor 0,06 dtk + render web 0,12 dtk (total ~0,2 dtk,
+   sesuai klaim README), HTML 2,92 MB / 5.502 node.
+5. **Cap node port di web: TERVERIFIKASI.** Host 35 port menggambar
+   tepat 30 node port + 1 node `+5 ports` dengan detail `+5 more
+   ports`, sementara tabel detail host tetap memuat ke-35 port.
+
+Perubahan: commit `afca0fe` ("audit: cap hasil paths --all,
+netralkan kontrol di DOT, lewati extraports count bukan angka; 68/68
+tes"), ter-push dan remote == lokal. README: jumlah tes 64 -> 68 +
+dokumentasi `--limit` dan pembuangan karakter kontrol DOT.
+
+### Verdict ronde ini
+
+v1.1.0 tetap solid, kini dengan tiga lubang kecil yang ditutup: satu
+perf (ledakan `--all`), satu sanitasi (byte kontrol di DOT), dan satu
+ketahanan parser (count bukan angka). Tidak ada temuan XSS baru —
+seluruh sink web tetap lewat `textContent` + JSON ter-escape.
+
 ## Audit Sabtu 2026-10-24 — ronde fungsional + adversarial (independen)
 
 Ronde audit terjadwal untuk repo Web Jumat (skema 3 build/minggu).
