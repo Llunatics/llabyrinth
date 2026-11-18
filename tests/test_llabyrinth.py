@@ -13,12 +13,17 @@ from llabyrinth import (  # noqa: E402
     InfraError,
     _term_safe,
     all_paths,
+    assess_risk,
     build_graph,
     load_infra,
+    parse_patch_list,
+    patched_adj,
     path_edges,
+    reachable_nodes,
     reachable_tree,
     render_dot,
     render_path,
+    resolve_patches,
     shortest_path,
 )
 
@@ -365,6 +370,119 @@ class TestSundayAudit(unittest.TestCase):
         self.assertNotIn("\x1b", dot)
         self.assertNotIn("\x07", dot)
         self.assertIn("h[31mRED[0m\\nFAKE", dot)  # newline jadi escape \n
+
+
+class TestRemediation(unittest.TestCase):
+    """Simulator remediasi 1.2.0 (llabyss): --patch + skor risiko."""
+
+    def setUp(self):
+        self.nodes, self.edges = load_infra(EXAMPLE)
+        self.adj = build_graph(self.nodes, self.edges)
+
+    def test_parse_patch_list(self):
+        self.assertEqual(parse_patch_list(["a,b", "c", "a", " d ,"]),
+                         ["a", "b", "c", "d"])
+        self.assertEqual(parse_patch_list(None), [])
+        self.assertEqual(parse_patch_list(["", " , "]), [])
+
+    def test_resolve_patches_unknown(self):
+        with self.assertRaises(InfraError):
+            resolve_patches(self.nodes, ["hantu"])
+
+    def test_patch_off_path_keeps_shortest(self):
+        for pid in ("ws02", "srv-file", "helpdesk"):
+            adj = patched_adj(self.adj, [pid])
+            p = shortest_path(adj, "attacker", "dc01")
+            self.assertIsNotNone(p, pid)
+            self.assertEqual(len(p) - 1, 7, pid)
+
+    def test_patch_cut_vertex_kills_path(self):
+        for pid in ("ws01", "alice", "svc-deploy", "server-admins",
+                    "srv-db", "budi"):
+            adj = patched_adj(self.adj, [pid])
+            self.assertIsNone(shortest_path(adj, "attacker", "dc01"), pid)
+
+    def test_assess_risk_baseline(self):
+        risk = assess_risk(self.adj, len(self.nodes), "attacker", "dc01")
+        self.assertEqual(risk, {"reachable": 13, "total": 13,
+                                "hops": 7, "risk": 70})
+
+    def test_assess_risk_after_patch(self):
+        adj = patched_adj(self.adj, ["ws02"])
+        risk = assess_risk(adj, len(self.nodes), "attacker", "dc01")
+        self.assertEqual(risk, {"reachable": 11, "total": 13,
+                                "hops": 7, "risk": 61})
+        adj = patched_adj(self.adj, ["ws01"])
+        risk = assess_risk(adj, len(self.nodes), "attacker", "dc01")
+        self.assertEqual(risk, {"reachable": 4, "total": 13,
+                                "hops": None, "risk": 18})
+
+    def test_reachable_nodes(self):
+        self.assertEqual(len(reachable_nodes(self.adj, "attacker")), 13)
+        adj = patched_adj(self.adj, ["ws01"])
+        self.assertEqual(reachable_nodes(adj, "attacker"),
+                         {"attacker", "alice", "ws02", "helpdesk"})
+
+    def run_cli(self, *args):
+        return subprocess.run(
+            [sys.executable, BIN, *args],
+            capture_output=True, text=True, timeout=30,
+        )
+
+    def test_cli_paths_patch_json(self):
+        r = self.run_cli("paths", EXAMPLE, "--from", "attacker",
+                         "--to", "dc01", "--patch", "ws02", "--json")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        data = json.loads(r.stdout)
+        self.assertEqual(data["patched"], ["ws02"])
+        self.assertEqual(data["risk"]["risk"], 61)
+        self.assertEqual(data["hops"], 7)
+
+    def test_cli_paths_patch_comma_and_repeat(self):
+        r = self.run_cli("paths", EXAMPLE, "--from", "attacker",
+                         "--to", "dc01", "--patch", "ws02,srv-file",
+                         "--patch", "helpdesk", "--json")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        data = json.loads(r.stdout)
+        self.assertEqual(data["patched"], ["ws02", "srv-file", "helpdesk"])
+        self.assertEqual(data["hops"], 7)
+
+    def test_cli_paths_patch_kills_path_exit_2(self):
+        r = self.run_cli("paths", EXAMPLE, "--from", "attacker",
+                         "--to", "dc01", "--patch", "ws01")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("1 node di-patch", r.stdout)
+
+    def test_cli_patch_unknown_node_exit_1(self):
+        r = self.run_cli("paths", EXAMPLE, "--from", "attacker",
+                         "--to", "dc01", "--patch", "hantu")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("tidak ada di infra", r.stderr)
+
+    def test_cli_patch_protected_nodes_exit_1(self):
+        for flag, node in (("--from", "attacker"), ("--to", "dc01")):
+            r = self.run_cli("paths", EXAMPLE, "--from", "attacker",
+                             "--to", "dc01", "--patch", node)
+            self.assertEqual(r.returncode, 1, node)
+            self.assertIn("tidak bisa di-patch", r.stderr)
+
+    def test_cli_tree_patch_hides_node(self):
+        r = self.run_cli("tree", EXAMPLE, "--from", "attacker",
+                         "--patch", "ws02")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("node di-patch: ws02", r.stdout)
+        body = r.stdout.split("\n\n", 1)[1]  # isi tree, tanpa header
+        self.assertNotIn("ws02", body)
+        self.assertIn("alice", body)
+
+    def test_cli_dot_patch_greys_node(self):
+        r = self.run_cli("dot", EXAMPLE, "--from", "attacker",
+                         "--to", "dc01", "--patch", "ws01")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("(patched)", r.stdout)
+        self.assertIn("style=dashed", r.stdout)
+        # Jalur sorotan tidak lagi lewat node yang di-patch.
+        self.assertNotIn("color=red", r.stdout)
 
 
 if __name__ == "__main__":

@@ -35,7 +35,7 @@ import re
 import sys
 import xml.etree.ElementTree as ET
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 
 # ---------------------------------------------------------------------------
 # Model
@@ -616,24 +616,35 @@ def _dot_escape(text):
     return _TERM_UNSAFE.sub("", s)
 
 
-def render_dot(nodes, edges, highlight=()):
+def render_dot(nodes, edges, highlight=(), patched=()):
     """DOT (Graphviz). highlight = set of (from, to) edge yang diwarnai merah.
 
-    Semua id/type/rel di-escape supaya id yang mengandung quote atau
-    backslash tidak merusak sintaks DOT.
+    patched = node yang di-patch: digambar abu-abu (terisi gelap) dan
+    edge yang menyentuhnya putus-putus. Semua id/type/rel di-escape
+    supaya id yang mengandung quote atau backslash tidak merusak
+    sintaks DOT.
     """
     hl = set(highlight)
+    drop = set(patched)
     lines = ["digraph attack_paths {", '  rankdir=LR;', '  node [fontname="monospace"];']
     for nid in sorted(nodes):
         ntype = nodes[nid]["type"]
         shape = _DOT_SHAPES.get(ntype, "ellipse")
-        lines.append(
-            '  "%s" [shape=%s, label="%s\\n[%s]"];'
-            % (_dot_escape(nid), shape, _dot_escape(nid), _dot_escape(ntype))
-        )
+        if nid in drop:
+            lines.append(
+                '  "%s" [shape=%s, label="%s\\n[%s] (patched)", style=filled, fillcolor="#1a1a1e", fontcolor="#6d6d76", color="#3a3a41"];'
+                % (_dot_escape(nid), shape, _dot_escape(nid), _dot_escape(ntype))
+            )
+        else:
+            lines.append(
+                '  "%s" [shape=%s, label="%s\\n[%s]"];'
+                % (_dot_escape(nid), shape, _dot_escape(nid), _dot_escape(ntype))
+            )
     for e in edges:
         attrs = 'label="%s"' % _dot_escape(e["rel"])
-        if (e["from"], e["to"]) in hl:
+        if e["from"] in drop or e["to"] in drop:
+            attrs += ', style=dashed, color="#3a3a41", fontcolor="#6d6d76"'
+        elif (e["from"], e["to"]) in hl:
             attrs += ", color=red, penwidth=2.5, fontcolor=red"
         lines.append(
             '  "%s" -> "%s" [%s];'
@@ -646,6 +657,82 @@ def render_dot(nodes, edges, highlight=()):
 def path_edges(path):
     """Edge-edge (from, to) di sepanjang sebuah path."""
     return [(path[i][0], path[i + 1][0]) for i in range(len(path) - 1)]
+
+
+# ---------------------------------------------------------------------------
+# Remediasi (llabyss): node yang di-patch keluar dari graf
+# ---------------------------------------------------------------------------
+
+def parse_patch_list(values):
+    """--patch boleh diulang dan dipisah koma: ['a,b', 'c'] -> ['a','b','c']."""
+    out = []
+    for v in values or []:
+        for piece in str(v).split(","):
+            piece = piece.strip()
+            if piece:
+                out.append(piece)
+    seen = set()
+    uniq = []
+    for p in out:
+        if p not in seen:
+            seen.add(p)
+            uniq.append(p)
+    return uniq
+
+
+def resolve_patches(nodes, patch_args):
+    """Validasi daftar patch terhadap node yang ada. Return list id."""
+    patched = parse_patch_list(patch_args)
+    unknown = [p for p in patched if p not in nodes]
+    if unknown:
+        raise InfraError("node patch tidak ada di infra: %s" % ", ".join(unknown))
+    return patched
+
+
+def patched_adj(adj, patched):
+    """Adjacency tanpa node yang di-patch: semua edge masuk/keluar hilang."""
+    drop = set(patched)
+    return {
+        src: [(dst, rel) for dst, rel in nbrs if dst not in drop]
+        for src, nbrs in adj.items()
+        if src not in drop
+    }
+
+
+def reachable_nodes(adj, start):
+    """Semua node yang terjangkau dari start (termasuk start)."""
+    seen = {start}
+    queue = [start]
+    while queue:
+        node = queue.pop(0)
+        for dst, _ in adj.get(node, []):
+            if dst not in seen:
+                seen.add(dst)
+                queue.append(dst)
+    return seen
+
+
+def assess_risk(adj, total, source, target, max_depth=8):
+    """Skor risiko 0-100 + attack surface untuk simulator remediasi.
+
+    attack surface = jumlah node yang masih terjangkau attacker dari
+    titik masuk (termasuk titik masuk). Skor = 60% bobot jangkauan +
+    40% bobot kedekatan jalur tercepat ke target (0 bila target sudah
+    terisolasi). Rumus didokumentasikan di README dan dicerminkan 1:1
+    oleh JS ekspor web, supaya angka CLI dan browser sama.
+    """
+    if source not in adj:
+        return {"reachable": 0, "total": total, "hops": None, "risk": 0}
+    reached = reachable_nodes(adj, source)
+    path = shortest_path(adj, source, target, max_depth)
+    hops = len(path) - 1 if path else None
+    if hops is None:
+        path_factor = 0.0
+    else:
+        path_factor = max(0.0, 1.0 - (hops - 1) / max_depth)
+    reach_factor = (len(reached) / total) if total else 0.0
+    risk = round(60 * reach_factor + 40 * path_factor)
+    return {"reachable": len(reached), "total": total, "hops": hops, "risk": risk}
 
 
 # ---------------------------------------------------------------------------
@@ -689,6 +776,15 @@ body{margin:0;background:var(--bg);color:var(--text);font:13.5px/1.55 var(--sans
 .btn{background:transparent;color:var(--sub);border:1px solid var(--line2);border-radius:8px;padding:6px 11px;font:12.5px var(--sans);cursor:pointer;white-space:nowrap}
 .topbar,.pathstrip,.graph-wrap{-webkit-user-select:none;user-select:none}
 .btn:hover{color:var(--text);border-color:#3a3a41;background:#131316}
+.btn.active{color:var(--accent);border-color:#4d7c0f}
+.btn:disabled{opacity:.4;cursor:default}
+.btn.small{padding:4px 9px;font-size:12px}
+.remedstrip{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:7px 18px;border-bottom:1px solid var(--line);background:rgba(163,230,53,.05);font-family:var(--mono);font-size:12px;color:#c9d6a3;flex:none}
+.remedstrip[hidden]{display:none}
+.remedstrip::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--accent);flex:none}
+#remed-text{word-break:break-word}
+.pathstrip.isolated{border-bottom-color:#2a3320;background:rgba(163,230,53,.05);color:#c9d6a3}
+.pathstrip.isolated::before{background:var(--accent)}
 .pathstrip{display:flex;align-items:center;gap:9px;padding:7px 18px;border-bottom:1px solid #2a1a1c;background:rgba(248,113,113,.045);font-family:var(--mono);font-size:12px;color:#dfa9a9;word-break:break-word;flex:none}
 .pathstrip[hidden]{display:none}
 .pathstrip::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--path);flex:none}
@@ -709,6 +805,10 @@ body{margin:0;background:var(--bg);color:var(--text);font:13.5px/1.55 var(--sans
 .lg-host{width:12px;height:9px;background:#17171b;border:1px solid #2c2c31;border-radius:3px;display:inline-block}
 .lg-port{width:5px;height:5px;border-radius:50%;background:#43434a;display:inline-block}
 .lg-path{width:14px;border-top:2px solid var(--path);display:inline-block}
+.lg-patched{width:12px;height:9px;background:#17171b;border:1px dashed #3a3a41;border-radius:3px;display:inline-block}
+.patch-btn{margin:2px 0 4px}
+.patch-btn.on{color:var(--accent);border-color:#4d7c0f}
+.patch-row{color:var(--sub)}
 .credit{color:#3a3a41;font-size:11px;white-space:nowrap}
 @media (max-width:900px){
   .brand{flex:1 1 auto;min-width:0}
@@ -733,11 +833,14 @@ body{margin:0;background:var(--bg);color:var(--text);font:13.5px/1.55 var(--sans
 .edge{stroke:#26262c;stroke-width:1}
 .edge.structural{stroke:#ffffff;stroke-opacity:.05}
 .edge.path{stroke:var(--path);stroke-width:1.75}
+.edge.blocked{stroke:#3a3a41;stroke-dasharray:3 3;opacity:.55}
 .edge.dim{opacity:.06}
 .node{cursor:pointer}
 .node text{pointer-events:none}
 .node.dim{opacity:.1}
 .node.down{opacity:.5}
+.node.patched{opacity:.45}
+.node.patched .body{stroke-dasharray:4 3}
 .node.onpath .body{stroke:var(--path);stroke-width:1.5}
 .node.onpath circle.body{fill:var(--path)}
 .node-subnet.onpath .body{stroke:rgba(248,113,113,.45);stroke-width:1.25}
@@ -779,10 +882,12 @@ table.ports th:nth-child(3),table.ports td:nth-child(3){width:56px}
   <div class="tools">
     <span class="stats" id="stats-line"></span>
     <input type="search" id="search" placeholder="Search IP, hostname, port, service…" autocomplete="off" spellcheck="false">
+    <button class="btn" id="btn-patch" type="button">Patch mode: off</button>
     <button class="btn" id="btn-fit" type="button">Fit view</button>
   </div>
 </header>
 <div class="pathstrip" id="path-strip" hidden></div>
+<div class="remedstrip" id="remed-strip" hidden><span id="remed-text"></span><button class="btn small" id="btn-reset-patches" type="button">Reset patches</button></div>
 <main class="layout">
   <section class="graph-wrap">
     <div class="stage">
@@ -790,7 +895,7 @@ table.ports th:nth-child(3),table.ports td:nth-child(3){width:56px}
       <div class="zoomctl"><button id="btn-zin" type="button" aria-label="Zoom in">+</button><button id="btn-zout" type="button" aria-label="Zoom out">&minus;</button></div>
     </div>
     <div class="graph-foot">
-      <div class="legend"><span><i class="lg-subnet"></i>subnet</span><span><i class="lg-host"></i>host</span><span><i class="lg-port"></i>port</span><span><i class="lg-path"></i>attack path</span></div>
+      <div class="legend"><span><i class="lg-subnet"></i>subnet</span><span><i class="lg-host"></i>host</span><span><i class="lg-port"></i>port</span><span><i class="lg-path"></i>attack path</span><span><i class="lg-patched"></i>patched</span></div>
       <div class="credit">Generated by llabyrinth · self-contained, works offline</div>
     </div>
   </section>
@@ -924,12 +1029,112 @@ function layout(){ if(hasSubnets) layoutSubnets(); else layoutColumns(); }
 /* ---- render ---- */
 var view = {k:1, tx:0, ty:0}, viewport = null, selectedId = null;
 var pathNodes = {}, pathEdges = {};
-if(model.path){
-  model.path.nodes.forEach(function(id){ pathNodes[id] = true; });
-  model.path.edges.forEach(function(pair){ pathEdges[pair[0] + '\n' + pair[1]] = true; });
+/* ---- remediation simulator (llabyss) ---- */
+var remed = model.remediation || null;
+var patched = {};
+if(remed){ remed.patched.forEach(function(id){ patched[id] = true; }); }
+var patchMode = false, dragMoved = false;
+function bfsPath(from, to, blocked){
+  if(blocked[from] || blocked[to]) return null;
+  if(from === to) return [from];
+  var queue = [[from]], seen = {};
+  seen[from] = true;
+  while(queue.length){
+    var path = queue.shift();
+    if(path.length - 1 >= remed.maxDepth) continue;
+    var nbrs = remed.adj[path[path.length - 1]] || [];
+    for(var i = 0; i < nbrs.length; i++){
+      var dst = nbrs[i];
+      if(blocked[dst] || seen[dst]) continue;
+      var np = path.concat([dst]);
+      if(dst === to) return np;
+      seen[dst] = true;
+      queue.push(np);
+    }
+  }
+  return null;
+}
+function reachableSet(from, blocked){
+  var seen = {};
+  if(blocked[from]) return seen;
+  var queue = [from];
+  seen[from] = true;
+  while(queue.length){
+    var n = queue.shift();
+    var nbrs = remed.adj[n] || [];
+    for(var i = 0; i < nbrs.length; i++){
+      var dst = nbrs[i];
+      if(!blocked[dst] && !seen[dst]){ seen[dst] = true; queue.push(dst); }
+    }
+  }
+  return seen;
+}
+function riskMetrics(){
+  var total = model.nodes.length;
+  var reached = reachableSet(remed.source, patched);
+  var res = bfsPath(remed.source, remed.target, patched);
+  var hops = res ? res.length - 1 : null;
+  var pf = hops === null ? 0 : Math.max(0, 1 - (hops - 1) / remed.maxDepth);
+  var risk = Math.round(60 * (Object.keys(reached).length / total) + 40 * pf);
+  return {reachable:Object.keys(reached).length, total:total, hops:hops, risk:risk, path:res};
+}
+function updatePathOverlay(){
+  pathNodes = {}; pathEdges = {};
   var strip = el('path-strip');
+  if(remed){
+    var res = bfsPath(remed.source, remed.target, patched);
+    strip.hidden = false;
+    if(res){
+      res.forEach(function(id){ pathNodes[id] = true; });
+      /* Pasangan jalur model (host -> subnet) tidak selalu searah
+         dengan edge tampilan (subnet -> host): tandai dua arah. */
+      for(var i = 0; i < res.length - 1; i++){
+        pathEdges[res[i] + '\n' + res[i + 1]] = true;
+        pathEdges[res[i + 1] + '\n' + res[i]] = true;
+      }
+      strip.classList.remove('isolated');
+      strip.textContent = 'Attack path (' + (res.length - 1) + ' hops): ' +
+        res.map(function(id){ return (byId[id] || {}).label || id; }).join(' → ');
+    } else {
+      strip.classList.add('isolated');
+      strip.textContent = 'Target isolated — no attack path remains.';
+    }
+  } else if(model.path){
+    model.path.nodes.forEach(function(id){ pathNodes[id] = true; });
+    model.path.edges.forEach(function(pair){ pathEdges[pair[0] + '\n' + pair[1]] = true; });
+    strip.hidden = false;
+    strip.textContent = 'Attack path (' + (model.path.edges.length) + ' hops): ' + model.path.summary;
+  }
+}
+function updateRemedStrip(){
+  var strip = el('remed-strip');
+  if(!remed){ strip.hidden = true; return; }
+  var m = riskMetrics();
+  var nPatched = Object.keys(patched).length;
   strip.hidden = false;
-  strip.textContent = 'Attack path (' + (model.path.edges.length) + ' hops): ' + model.path.summary;
+  el('remed-text').textContent =
+    'Risk ' + m.risk + ' · attack surface ' + m.reachable + '/' + m.total +
+    ' · shortest path ' + (m.hops === null ? 'isolated' : m.hops + ' hops') +
+    ' · patched ' + nPatched;
+}
+function patchableReason(id){
+  var n = byId[id];
+  if(!n) return 'unknown node';
+  if(remed && id === remed.source) return 'entry point — cannot patch';
+  if(remed && id === remed.target) return 'target — cannot patch';
+  if(n.kind === 'subnet') return 'subnet container — patch the hosts inside it instead';
+  if(n.kind === 'more') return 'aggregated ports — patch from the host details';
+  return null;
+}
+function togglePatch(id){
+  if(!remed) return;
+  /* Melepas patch selalu boleh; menambah patch baru dibatasi
+     (titik masuk/target/subnet/agregat tidak bisa ditambal). */
+  if(!patched[id] && patchableReason(id)) return;
+  if(patched[id]) delete patched[id]; else patched[id] = true;
+  updatePathOverlay();
+  updateRemedStrip();
+  render();
 }
 function render(){
   while(svg.firstChild) svg.removeChild(svg.firstChild);
@@ -944,11 +1149,11 @@ function render(){
   });
   model.edges.forEach(function(e){
     var a = byId[e.from], b = byId[e.to]; if(!a || !b) return;
-    var cls = 'edge' + (hasSubnets ? ' structural' : '') + (pathEdges[e.from + '\n' + e.to] ? ' path' : '');
+    var cls = 'edge' + (hasSubnets ? ' structural' : '') + (pathEdges[e.from + '\n' + e.to] ? ' path' : '') + ((patched[e.from] || patched[e.to]) ? ' blocked' : '');
     gE.appendChild(svgEl('line', {'class': cls, x1:a.x, y1:a.y, x2:b.x, y2:b.y, 'data-from':e.from, 'data-to':e.to}));
   });
   model.nodes.forEach(function(n){
-    var cls = 'node node-' + n.kind + (pathNodes[n.id] ? ' onpath' : '') + (n.status && n.status !== 'up' ? ' down' : '');
+    var cls = 'node node-' + n.kind + (pathNodes[n.id] ? ' onpath' : '') + (patched[n.id] ? ' patched' : '') + (n.status && n.status !== 'up' ? ' down' : '');
     var g = svgEl('g', {'class':cls, 'data-node-id': n.id, transform:'translate(' + n.x + ',' + n.y + ')'});
     if(n.kind === 'subnet'){
       var w = n._box.w, hgt = n._box.h;
@@ -989,7 +1194,12 @@ function render(){
         g.appendChild(sb);
       }
     }
-    g.addEventListener('click', function(evt){ evt.stopPropagation(); select(n.id); });
+    g.addEventListener('click', function(evt){
+      evt.stopPropagation();
+      if(patchMode && !dragMoved){ togglePatch(n.id); select(n.id); return; }
+      dragMoved = false;
+      select(n.id);
+    });
     g.addEventListener('pointerdown', function(evt){ startDrag(evt, n, g); });
     gN.appendChild(g);
   });
@@ -1034,7 +1244,8 @@ function toGraph(cx, cy){ var r = svg.getBoundingClientRect(); return {x:(cx - r
 function startDrag(evt, node, g){
   if(evt.button !== undefined && evt.button !== 0) return;
   var p = toGraph(evt.clientX, evt.clientY);
-  drag = {kind:'node', node:node, el:g, dx:node.x - p.x, dy:node.y - p.y};
+  drag = {kind:'node', node:node, el:g, dx:node.x - p.x, dy:node.y - p.y, sx:evt.clientX, sy:evt.clientY};
+  dragMoved = false;
   evt.preventDefault();
 }
 var ptrs = {}, pinch = null;
@@ -1072,7 +1283,9 @@ svg.addEventListener('pointermove', function(evt){
   }
   if(!drag) return;
   if(drag.kind === 'pan'){ view.tx = drag.tx + evt.clientX - drag.sx; view.ty = drag.ty + evt.clientY - drag.sy; applyView(); }
-  else { var p = toGraph(evt.clientX, evt.clientY); drag.node.x = p.x + drag.dx; drag.node.y = p.y + drag.dy;
+  else { var p = toGraph(evt.clientX, evt.clientY);
+    if(Math.abs(evt.clientX - drag.sx) > 5 || Math.abs(evt.clientY - drag.sy) > 5) dragMoved = true;
+    drag.node.x = p.x + drag.dx; drag.node.y = p.y + drag.dy;
     drag.el.setAttribute('transform', 'translate(' + drag.node.x + ',' + drag.node.y + ')');
     var lines = svg.querySelectorAll('line.edge');
     for(var i = 0; i < lines.length; i++){ var L = lines[i];
@@ -1083,7 +1296,7 @@ function endPtr(evt){ delete ptrs[evt.pointerId]; if(ptrList().length < 2) pinch
 svg.addEventListener('pointerup', endPtr);
 svg.addEventListener('pointercancel', endPtr);
 svg.addEventListener('pointerleave', function(evt){ delete ptrs[evt.pointerId]; if(ptrList().length < 2) pinch = null; drag = null; });
-svg.addEventListener('click', function(){ selectedId = null; markSelected(); showPlaceholder(); });
+svg.addEventListener('click', function(){ dragMoved = false; selectedId = null; markSelected(); showPlaceholder(); });
 svg.addEventListener('wheel', function(evt){
   evt.preventDefault();
   var r = svg.getBoundingClientRect(), mx = evt.clientX - r.left, my = evt.clientY - r.top;
@@ -1100,7 +1313,9 @@ function showPlaceholder(){
   detailTitle.textContent = (window.matchMedia && window.matchMedia('(max-width: 900px)').matches) ? 'Tap a node for details' : 'Details';
   while(detailBody.firstChild) detailBody.removeChild(detailBody.firstChild);
   detailBody.appendChild(h('p', 'muted', 'Click a node to inspect it.'));
-  detailBody.appendChild(h('p', 'hint', 'Drag to pan · scroll to zoom · drag a node to move it.'));
+  detailBody.appendChild(h('p', 'hint', remed ?
+    'Drag to pan · scroll to zoom · drag a node to move it. Patch mode: click a node to patch it.' :
+    'Drag to pan · scroll to zoom · drag a node to move it.'));
 }
 function scriptBlocks(scripts, parent){
   (scripts || []).forEach(function(s){
@@ -1124,6 +1339,28 @@ function select(id){
     dl.appendChild(h('dd', null, pair[1]));
   });
   detailBody.appendChild(dl);
+  if(remed){
+    detailBody.appendChild(h('h3', null, 'Remediation'));
+    var reason = patched[id] ? null : patchableReason(id);
+    if(reason){
+      detailBody.appendChild(h('p', 'muted', reason + '.'));
+    } else {
+      var pb = h('button', 'btn patch-btn' + (patched[id] ? ' on' : ''),
+                 patched[id] ? 'Remove patch' : 'Patch this node');
+      pb.addEventListener('click', function(){ togglePatch(id); select(id); });
+      detailBody.appendChild(pb);
+    }
+    var pids = Object.keys(patched);
+    if(pids.length){
+      detailBody.appendChild(h('p', 'muted', 'Patched (' + pids.length + '):'));
+      pids.forEach(function(pid){
+        var row = h('button', 'link-row patch-row',
+                    '✕ ' + ((byId[pid] || {}).label || pid));
+        row.addEventListener('click', function(){ togglePatch(pid); select(id); });
+        detailBody.appendChild(row);
+      });
+    }
+  }
   if(d.ports && d.ports.length){
     detailBody.appendChild(h('h3', null, 'Ports (' + d.ports.length + ' listed)'));
     var table = h('table', 'ports'), head = h('tr');
@@ -1186,6 +1423,25 @@ el('search').addEventListener('input', function(){
 el('btn-fit').addEventListener('click', fit);
 el('btn-zin').addEventListener('click', function(){ zoomStep(1.3); });
 el('btn-zout').addEventListener('click', function(){ zoomStep(1 / 1.3); });
+var btnPatch = el('btn-patch');
+if(remed){
+  btnPatch.addEventListener('click', function(){
+    patchMode = !patchMode;
+    btnPatch.classList.toggle('active', patchMode);
+    btnPatch.textContent = patchMode ? 'Patch mode: on' : 'Patch mode: off';
+  });
+} else {
+  btnPatch.disabled = true;
+  btnPatch.title = 'Export with --from/--to to enable the remediation simulator';
+}
+el('btn-reset-patches').addEventListener('click', function(){
+  if(!remed) return;
+  patched = {};
+  updatePathOverlay();
+  updateRemedStrip();
+  render();
+  if(selectedId) select(selectedId);
+});
 var resizeTimer = null;
 window.addEventListener('resize', function(){
   if(resizeTimer) clearTimeout(resizeTimer);
@@ -1193,6 +1449,8 @@ window.addEventListener('resize', function(){
 });
 showPlaceholder();
 layout();
+updatePathOverlay();
+updateRemedStrip();
 render();
 fit();
 })();
@@ -1292,13 +1550,21 @@ def _service_fields(det):
     return fields
 
 
-def build_display(model, path=None):
+def build_display(model, path=None, source=None, target=None, max_depth=8,
+                  patched=()):
     """Model llabyrinth -> struktur tampilan untuk ekspor web.
 
     path: hasil shortest_path() [(node, rel), ...] atau None. Overlay
     jalur dihitung di sini (bukan di JS) supaya bisa diuji dari Python:
     display["path"] = {"nodes": [...], "edges": [[from, to], ...],
     "summary": "a → b → c"}.
+
+    Bila source+target diberikan, display["remediation"] berisi data
+    simulator remediasi (ruang id tampilan): titik masuk, target,
+    maxDepth, node yang sudah di-patch, dan adjacency searah model —
+    JS memakainya untuk BFS ulang tiap kali node di-patch/unpatch,
+    sehingga skor risiko & attack surface di browser selalu sama
+    dengan hitungan Python (assess_risk).
     """
     nodes = model["nodes"]
     edges = model["edges"]
@@ -1309,6 +1575,7 @@ def build_display(model, path=None):
     d_edges = []
     d_details = {}
     path_display = None
+    port_display_id = {}  # service model id -> display node id
 
     if model.get("source") == "nmap" and details is not None:
         host_ids = [nid for nid in sorted(details)
@@ -1320,7 +1587,6 @@ def build_display(model, path=None):
                 "id": "subnet:" + key, "kind": "subnet",
                 "label": key, "sub": "subnet",
             })
-        port_display_id = {}  # service model id -> display node id
         for hid in host_ids:
             rec = details[hid]
             label = rec["hostnames"][0]["name"] if rec["hostnames"] else hid
@@ -1469,6 +1735,55 @@ def build_display(model, path=None):
             }
         stats_line = "%d nodes · %d edges" % (len(nodes), len(edges))
 
+    remediation = None
+    if source is not None and target is not None:
+        is_nmap = model.get("source") == "nmap"
+
+        def to_display(mid):
+            if details is not None and mid in details:
+                if details[mid].get("kind") == "service":
+                    return port_display_id.get(mid, details[mid]["host"])
+                return mid  # host
+            if (is_nmap and mid in nodes
+                    and nodes[mid]["type"] == "group"):
+                return "subnet:" + mid
+            return mid
+
+        disp_patched = []
+        skipped = []
+        for pid in patched:
+            did = to_display(pid)
+            # Port yang terlipat ke node "+N ports" tidak bisa di-patch
+            # per-port dari CLI — lewati dengan catatan di stderr.
+            if did.endswith("/more"):
+                skipped.append(pid)
+                continue
+            disp_patched.append(did)
+        if skipped:
+            print("llabyrinth: catatan: patch %s dilewati — port-nya "
+                  "terlipat ke node '+N ports' di tampilan web"
+                  % ", ".join(skipped), file=sys.stderr)
+        # Adjacency ruang-tampilan, searah model (host -> subnet ikut
+        # karena member-of; port hanya host -> port, bukan sebaliknya).
+        # Diurutkan seperti build_graph supaya BFS JS = BFS Python.
+        disp_adj = {}
+        for e in edges:
+            a, b = to_display(e["from"]), to_display(e["to"])
+            if a == b:
+                continue
+            disp_adj.setdefault(a, [])
+            if b not in disp_adj[a]:
+                disp_adj[a].append(b)
+        for k in disp_adj:
+            disp_adj[k].sort()
+        remediation = {
+            "source": to_display(source),
+            "target": to_display(target),
+            "maxDepth": max_depth,
+            "patched": disp_patched,
+            "adj": disp_adj,
+        }
+
     meta = model.get("meta") or {}
     title = "llabyrinth web map"
     if meta.get("args"):
@@ -1482,6 +1797,7 @@ def build_display(model, path=None):
         "edges": d_edges,
         "details": d_details,
         "path": path_display,
+        "remediation": remediation,
     }
 
 
@@ -1551,16 +1867,35 @@ def _load_or_die(args):
         return None, _die(exc)
 
 
+def _patches_or_die(args, nodes, protected):
+    """Validasi --patch: node harus ada, dan node yang dilindungi
+    (titik masuk / target) tidak boleh ditambal. protected = dict
+    {node_id: label}. Return (patched, err) — err None bila OK."""
+    try:
+        patched = resolve_patches(nodes, getattr(args, "patch", None))
+    except InfraError as exc:
+        return None, _die(str(exc))
+    for pid in patched:
+        if pid in protected:
+            return None, _die("node %r tidak bisa di-patch (%s)"
+                              % (pid, protected[pid]))
+    return patched, None
+
+
 def cmd_paths(args):
     model, err = _load_or_die(args)
     if err is not None:
         return err
     nodes, edges = model["nodes"], model["edges"]
-    adj = build_graph(nodes, edges)
     if args.source not in nodes:
         return _die("node --from %r tidak ada di infra" % args.source)
     if args.target not in nodes:
         return _die("node --to %r tidak ada di infra" % args.target)
+    patched, err = _patches_or_die(
+        args, nodes, {args.source: "titik masuk", args.target: "target"})
+    if err is not None:
+        return err
+    adj = patched_adj(build_graph(nodes, edges), patched)
 
     if args.all:
         if args.limit is not None and args.limit < 0:
@@ -1572,7 +1907,9 @@ def cmd_paths(args):
                   "pertama (pakai --limit lebih besar atau 0 untuk tanpa "
                   "batas)" % args.limit, file=sys.stderr)
         if not paths:
-            print("tidak ada path %s -> %s (maks %d hop)" % (args.source, args.target, args.max_depth))
+            print("tidak ada path %s -> %s (maks %d hop%s)" % (
+                args.source, args.target, args.max_depth,
+                "; %d node di-patch" % len(patched) if patched else ""))
             return 2
         if args.json:
             print(json.dumps(
@@ -1581,6 +1918,8 @@ def cmd_paths(args):
                   "rels": [r for _, r in p[1:]]} for p in paths],
                 indent=2))
         else:
+            if patched:
+                print("node di-patch: %s\n" % ", ".join(patched))
             print("%d path ditemukan (maks %d hop), terurut dari terpendek:\n" % (len(paths), args.max_depth))
             for i, p in enumerate(paths, 1):
                 print("path %d — %d hop:" % (i, len(p) - 1))
@@ -1590,15 +1929,22 @@ def cmd_paths(args):
 
     path = shortest_path(adj, args.source, args.target, args.max_depth)
     if path is None:
-        print("tidak ada path %s -> %s (maks %d hop)" % (args.source, args.target, args.max_depth))
+        print("tidak ada path %s -> %s (maks %d hop%s)" % (
+            args.source, args.target, args.max_depth,
+            "; %d node di-patch" % len(patched) if patched else ""))
         return 2
     if args.json:
         print(json.dumps({
             "hops": len(path) - 1,
             "nodes": [n for n, _ in path],
             "rels": [r for _, r in path[1:]],
+            "patched": patched,
+            "risk": assess_risk(adj, len(nodes), args.source,
+                                args.target, args.max_depth),
         }, indent=2))
     else:
+        if patched:
+            print("node di-patch: %s\n" % ", ".join(patched))
         print("jalur tercepat: %d hop\n" % (len(path) - 1))
         print(render_path(path))
     return 0
@@ -1609,10 +1955,16 @@ def cmd_tree(args):
     if err is not None:
         return err
     nodes, edges = model["nodes"], model["edges"]
-    adj = build_graph(nodes, edges)
     if args.source not in nodes:
         return _die("node --from %r tidak ada di infra" % args.source)
-    print("peta serangan dari %s (maks %d hop):\n" % (args.source, args.max_depth))
+    patched, err = _patches_or_die(
+        args, nodes, {args.source: "titik masuk"})
+    if err is not None:
+        return err
+    adj = patched_adj(build_graph(nodes, edges), patched)
+    patched_note = ("; node di-patch: " + ", ".join(patched)) if patched else ""
+    print("peta serangan dari %s (maks %d hop%s):\n"
+          % (args.source, args.max_depth, patched_note))
     print("\n".join(reachable_tree(adj, nodes, args.source, args.max_depth)))
     return 0
 
@@ -1622,7 +1974,15 @@ def cmd_dot(args):
     if err is not None:
         return err
     nodes, edges = model["nodes"], model["edges"]
-    adj = build_graph(nodes, edges)
+    protected = {}
+    if args.source:
+        protected[args.source] = "titik masuk"
+    if args.target:
+        protected[args.target] = "target"
+    patched, err = _patches_or_die(args, nodes, protected)
+    if err is not None:
+        return err
+    adj = patched_adj(build_graph(nodes, edges), patched)
     highlight = set()
     if args.target and not args.source:
         print("llabyrinth: peringatan: --to diabaikan tanpa --from "
@@ -1635,7 +1995,7 @@ def cmd_dot(args):
         path = shortest_path(adj, args.source, args.target, args.max_depth)
         if path:
             highlight = set(path_edges(path))
-    dot = render_dot(nodes, edges, highlight)
+    dot = render_dot(nodes, edges, highlight, patched)
     if args.out:
         try:
             with open(args.out, "w", encoding="utf-8") as fh:
@@ -1655,7 +2015,15 @@ def cmd_web(args):
     nodes, edges = model["nodes"], model["edges"]
     for w in model.get("warnings", []):
         print("llabyrinth: catatan: %s" % _term_safe(w), file=sys.stderr)
-    adj = build_graph(nodes, edges)
+    protected = {}
+    if args.source:
+        protected[args.source] = "titik masuk"
+    if args.target:
+        protected[args.target] = "target"
+    patched, err = _patches_or_die(args, nodes, protected)
+    if err is not None:
+        return err
+    adj = patched_adj(build_graph(nodes, edges), patched)
     path = None
     if args.target and not args.source:
         print("llabyrinth: peringatan: --to diabaikan tanpa --from "
@@ -1671,7 +2039,8 @@ def cmd_web(args):
                   "(maks %d hop); ekspor tanpa sorotan"
                   % (args.source, args.target, args.max_depth),
                   file=sys.stderr)
-    display = build_display(model, path)
+    display = build_display(model, path, args.source, args.target,
+                            args.max_depth, patched)
     html_text = render_web_html(display)
     if args.out:
         try:
@@ -1722,6 +2091,14 @@ def _add_source_args(sp):
                          "sebagai node service")
 
 
+def _add_patch_arg(sp):
+    """--patch bersama: node yang dianggap sudah di-patch (ditambal)."""
+    sp.add_argument("--patch", action="append", default=None, metavar="NODE",
+                    help="node yang dianggap sudah di-patch: dihapus dari "
+                         "graf beserta edge-nya; bisa diulang atau dipisah "
+                         "koma (titik masuk & target tidak bisa di-patch)")
+
+
 def build_parser():
     p = argparse.ArgumentParser(
         prog="llabyrinth",
@@ -1733,6 +2110,7 @@ def build_parser():
 
     sp = sub.add_parser("paths", help="cari jalur serangan start -> target (BFS)")
     _add_source_args(sp)
+    _add_patch_arg(sp)
     sp.add_argument("--from", dest="source", required=True, help="node awal (titik masuk attacker)")
     sp.add_argument("--to", dest="target", required=True, help="node target")
     sp.add_argument("--all", action="store_true", help="tampilkan SEMUA simple path, bukan cuma tercepat")
@@ -1743,12 +2121,14 @@ def build_parser():
 
     st = sub.add_parser("tree", help="gambar peta serangan ASCII dari satu titik")
     _add_source_args(st)
+    _add_patch_arg(st)
     st.add_argument("--from", dest="source", required=True, help="node awal")
     st.add_argument("--max-depth", type=int, default=8, help="maks kedalaman (default 8)")
     st.set_defaults(func=cmd_tree)
 
     sd = sub.add_parser("dot", help="ekspor graf ke DOT (Graphviz)")
     _add_source_args(sd)
+    _add_patch_arg(sd)
     sd.add_argument("--from", dest="source", default=None, help="sorot jalur tercepat dari node ini")
     sd.add_argument("--to", dest="target", default=None, help="sorot jalur tercepat ke node ini")
     sd.add_argument("--max-depth", type=int, default=8, help="maks hop jalur sorotan (default 8)")
@@ -1757,6 +2137,7 @@ def build_parser():
 
     sw = sub.add_parser("web", help="ekspor graf sebagai satu file HTML interaktif (offline)")
     _add_source_args(sw)
+    _add_patch_arg(sw)
     sw.add_argument("--from", dest="source", default=None, help="sorot jalur tercepat dari node ini")
     sw.add_argument("--to", dest="target", default=None, help="sorot jalur tercepat ke node ini")
     sw.add_argument("--max-depth", type=int, default=8, help="maks hop jalur sorotan (default 8)")

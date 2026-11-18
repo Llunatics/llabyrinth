@@ -7,6 +7,13 @@ Attack-path mapper ala BloodHound: dari daftar host, user, grup, dan relasinya, 
 - Output: ASCII tree, panah berlabel relasi, JSON, DOT (Graphviz), dan satu file HTML interaktif
 - **Impor Nmap** (sejak 1.1.0): model bisa dibangun langsung dari hasil scan `nmap -oX` lewat `--from-nmap` — tidak perlu menulis JSON infra dengan tangan
 
+## Baru di 1.2.0 — simulator remediasi (llabyss)
+
+- `--patch NODE` di `paths`, `tree`, `dot`, dan `web`: node yang dianggap sudah di-patch (ditambal) dihapus dari graf beserta semua edge-nya — bisa diulang atau dipisah koma (`--patch ws01,ws02`). Titik masuk (`--from`) dan target (`--to`) tidak bisa di-patch; node yang tidak ada ditolak dengan error bersih.
+- Subcommand `web`: **simulator remediasi interaktif** — tombol *Patch mode* lalu klik node/port untuk menambal/melepasnya (atau pakai tombol *Patch this node* di panel detail). Setiap klik menghitung ulang jalur serangan (BFS) di browser: jalur terpendek disorot ulang, dan strip remediasi menampilkan skor risiko, attack surface, dan jumlah node yang di-patch secara live. Node yang di-patch digambar abu-abu dengan garis putus-putus; target yang terisolasi ditandai strip hijau. Tanpa `--from/--to`, simulator nonaktif.
+- Skor risiko (0–100, sama di CLI `--json` dan di browser): `round(60 × reachable/total + 40 × path_factor)`, dengan `reachable` = node yang masih terjangkau attacker dari titik masuk (termasuk titik masuk), `total` = jumlah node, dan `path_factor = 0` bila target terisolasi, selain itu `max(0, 1 − (hops−1)/max_depth)`. `paths --json` kini menyertakan `patched` dan `risk` (`{reachable, total, hops, risk}`).
+- `dot` menggambar node yang di-patch abu-abu berlabel `(patched)` dengan edge putus-putus; sorotan jalur dihitung dari graf yang sudah di-patch.
+
 ## Baru di 1.1.0
 
 - `--from-nmap scan.xml` di semua subcommand: host → node `host`, subnet → node `group`, port terbuka → node `service`. Host multi-homed (MAC sama) digabung jadi satu node.
@@ -75,9 +82,12 @@ Catatan kejujuran topologi: scan saja tidak membuktikan routing antar-subnet. Ta
 |---|---|
 | `paths INFRA --from S --to T` | Jalur tercepat S → T (BFS) |
 | `paths ... --all` | Semua simple path S → T, terurut dari terpendek |
+| `paths ... --patch N` | Jalur tercepat dengan N dianggap sudah di-patch |
 | `tree INFRA --from S` | Peta serangan ASCII dari S (tandai cycle & node yang sudah digambar) |
+| `tree ... --patch N` | Peta serangan tanpa N (dan semua edge-nya) |
 | `dot INFRA --from S --to T -o lab.dot` | Ekspor Graphviz DOT; jalur tercepat disorot merah |
 | `web INFRA --from S --to T -o peta.html` | Ekspor satu file HTML interaktif; jalur tercepat disorot merah |
+| `web ... --patch N` | Ekspor dengan N sudah di-patch sejak awal |
 | `validate INFRA` | Validasi skema + peringatan (relasi asing, node yatim) |
 
 `INFRA` bisa diganti `--from-nmap scan.xml` di semua perintah di atas. Flag umum: `--max-depth N` (default 8), `--json` (untuk `paths`), `--include-down` / `--include-closed` (untuk `--from-nmap`).
@@ -106,6 +116,7 @@ dot -Tpng lab.dot -o lab.png   # butuh Graphviz terinstal
 - Tata letak terstruktur (bukan force-directed): subnet digambar sebagai kontainer berlabel dengan host tersusun grid di dalamnya dan port sebagai titik kecil di bawah host; model infra JSON digambar sebagai kolom per jenis node. Tema gelap netral — aksen lime hanya untuk seleksi, merah hanya untuk jalur serangan.
 - Klik node → panel detail: tabel port lengkap (tanpa batas tampilan), banner service, OS guess, hostname, MAC/vendor, dan output script NSE.
 - Bila `--from/--to` diberikan dan jalurnya ada, jalur serangan disorot merah di graf dan diringkas di strip atas.
+- **Simulator remediasi (1.2.0):** tombol *Patch mode* lalu klik node/port untuk menambal (host = menambal host-nya, port = menutup port-nya); jalur serangan, skor risiko, dan attack surface dihitung ulang langsung di browser. Titik masuk, target, subnet, dan node agregat `+N ports` tidak bisa ditambal — tambal host di dalamnya. Tombol *Reset patches* mengembalikan keadaan awal; `--patch` di CLI memuat ekspor dengan node yang sudah ditambal.
 - Semua teks hasil scan dirender sebagai teks inert (`textContent` + JSON yang di-escape) — banner jahat dari host yang di-scan tidak bisa menyuntikkan markup.
 
 Contoh output `paths`:
@@ -137,7 +148,7 @@ attacker
 python3 -m unittest discover -s tests
 ```
 
-68 tes: validasi skema, BFS/DFS path, deteksi cycle, render DOT, end-to-end CLI, regresi audit 1.0 (escaping DOT, dedup tree di batas depth, default max-depth), plus suite 1.1.0 — impor Nmap (host down, IPv6, port filtered/closed, merge MAC, XML rusak/bukan Nmap, XXE, `<table>` bersarang dalam), ekspor web (overlay jalur, escaping JSON, batas node port), regresi audit 1.1.0, sanitasi karakter kontrol untuk output terminal (`tree`/`paths`/`validate`) dan DOT, cap hasil `paths --all`, dan toleransi `extraports` ber-count bukan angka.
+86 tes: validasi skema, BFS/DFS path, deteksi cycle, render DOT, end-to-end CLI, regresi audit 1.0 (escaping DOT, dedup tree di batas depth, default max-depth), plus suite 1.1.0 — impor Nmap (host down, IPv6, port filtered/closed, merge MAC, XML rusak/bukan Nmap, XXE, `<table>` bersarang dalam), ekspor web (overlay jalur, escaping JSON, batas node port), regresi audit 1.1.0, sanitasi karakter kontrol untuk output terminal (`tree`/`paths`/`validate`) dan DOT, cap hasil `paths --all`, dan toleransi `extraports` ber-count bukan angka — plus suite 1.2.0: parsing `--patch` (koma/ulang/dedup), jalur berubah & terisolasi setelah patch, skor risiko baseline vs sesudah patch (corp.json 70 → 61 → 18), CLI `--patch` di keempat subcommand, pemetaan remediasi tampilan web untuk impor Nmap (host → subnet dua arah, port tanpa edge balik), dan ekspor tanpa `--from/--to` (remediasi nonaktif).
 
 Smoke test klik-sungguhan untuk ekspor web (jsdom, hanya untuk tes — tool-nya sendiri tetap stdlib-only):
 
@@ -149,6 +160,8 @@ node tests/web-smoke.js
 ## Catatan perilaku
 
 - `dot --to T` tanpa `--from` mencetak peringatan ke stderr dan mengabaikan sorotan (sorotan jalur butuh keduanya).
+- `--patch` menghapus node beserta semua edge-nya dari graf; menambal titik masuk/target ditolak (rc 1), menambal node yang tidak ada juga ditolak (rc 1). Menambal satu-satunya jembatan ke target membuat `paths` menjawab "tidak ada path" (rc 2) — itu memang jawaban yang benar, dan di ekspor web targetnya ditandai terisolasi.
+- Skor risiko dihitung dari graf yang sudah di-patch: menambal node di luar jalur tetap menurunkan skor lewat attack surface yang menyusut (contoh corp.json: 70 → 61 setelah menambal `ws02` yang bukan di jalur).
 - Karakter `"`, `\`, dan newline di dalam id node / label relasi di-escape otomatis supaya output DOT tetap valid; sisa karakter kontrol dibuang.
 - `paths --all` menampilkan maks 10.000 path (peringatan ke stderr bila terpotong); naikkan dengan `--limit N`, atau `--limit 0` untuk tanpa batas. Bila terpotong, urutan tetap terpendek-dulu di antara path yang sempat ditemukan.
 

@@ -116,6 +116,97 @@ async function main() {
   search.dispatchEvent(new window.Event('input', { bubbles: true }));
   check('search cleared → nothing dimmed',
     !wsHost.classList.contains('dim') && !dbHost.classList.contains('dim'));
+
+  /* ---- remediation simulator (llabyss) ---- */
+  var remedStrip = window.document.getElementById('remed-strip');
+  var btnPatch = window.document.getElementById('btn-patch');
+  check('remediation strip visible with baseline risk',
+    remedStrip.hidden === false &&
+    remedStrip.textContent.indexOf('Risk 74') !== -1 &&
+    remedStrip.textContent.indexOf('20/27') !== -1 &&
+    remedStrip.textContent.indexOf('3 hops') !== -1 &&
+    remedStrip.textContent.indexOf('patched 0') !== -1,
+    remedStrip.textContent);
+  check('patch mode button enabled', btnPatch.disabled === false);
+  click(window, btnPatch);
+  check('patch mode toggles on',
+    btnPatch.textContent === 'Patch mode: on' &&
+    btnPatch.classList.contains('active'));
+
+  var midHost = nodeById(window, '192.168.1.20');
+  click(window, midHost);
+  midHost = nodeById(window, '192.168.1.20');
+  check('patch mode: click mid-path host patches it',
+    midHost.classList.contains('patched'));
+  check('patching mid host isolates the target',
+    strip.textContent.indexOf('Target isolated') !== -1 &&
+    strip.classList.contains('isolated'));
+  check('risk drops after isolating patch (36, 16/27)',
+    remedStrip.textContent.indexOf('Risk 36') !== -1 &&
+    remedStrip.textContent.indexOf('16/27') !== -1 &&
+    remedStrip.textContent.indexOf('isolated') !== -1 &&
+    remedStrip.textContent.indexOf('patched 1') !== -1,
+    remedStrip.textContent);
+  check('no path edges left after isolating patch',
+    window.document.querySelectorAll('#graph line.edge.path').length === 0);
+
+  click(window, midHost);
+  midHost = nodeById(window, '192.168.1.20');
+  check('click patched node again unpatches it',
+    !midHost.classList.contains('patched'));
+  check('path strip restored after unpatch',
+    strip.textContent.indexOf('Attack path (3 hops)') !== -1 &&
+    !strip.classList.contains('isolated'));
+  check('risk restored after unpatch',
+    remedStrip.textContent.indexOf('Risk 74') !== -1);
+
+  var port80 = nodeById(window, '192.168.1.20:80/tcp');
+  click(window, port80);
+  port80 = nodeById(window, '192.168.1.20:80/tcp');
+  check('patching off-path port keeps the path, shrinks surface',
+    port80.classList.contains('patched') &&
+    strip.textContent.indexOf('Attack path (3 hops)') !== -1 &&
+    remedStrip.textContent.indexOf('Risk 72') !== -1 &&
+    remedStrip.textContent.indexOf('19/27') !== -1,
+    remedStrip.textContent);
+
+  var srcHost = nodeById(window, '192.168.1.1');
+  click(window, srcHost);
+  srcHost = nodeById(window, '192.168.1.1');
+  check('entry point cannot be patched',
+    !srcHost.classList.contains('patched') &&
+    remedStrip.textContent.indexOf('patched 1') !== -1);
+  var subnet = nodeById(window, 'subnet:192.168.1.0/24');
+  click(window, subnet);
+  subnet = nodeById(window, 'subnet:192.168.1.0/24');
+  check('subnet container cannot be patched',
+    !subnet.classList.contains('patched'));
+
+  click(window, window.document.getElementById('btn-reset-patches'));
+  port80 = nodeById(window, '192.168.1.20:80/tcp');
+  check('reset patches restores baseline',
+    !port80.classList.contains('patched') &&
+    remedStrip.textContent.indexOf('Risk 74') !== -1 &&
+    remedStrip.textContent.indexOf('patched 0') !== -1);
+
+  click(window, btnPatch);
+  check('patch mode toggles off', btnPatch.textContent === 'Patch mode: off');
+  var host20 = nodeById(window, '192.168.1.20');
+  click(window, host20);
+  var patchBtn = window.document.querySelector('.patch-btn');
+  check('detail panel offers Patch button in inspect mode',
+    !!patchBtn && patchBtn.textContent === 'Patch this node');
+  click(window, patchBtn);
+  host20 = nodeById(window, '192.168.1.20');
+  check('detail Patch button patches the node',
+    host20.classList.contains('patched'));
+  patchBtn = window.document.querySelector('.patch-btn');
+  check('detail button flips to Remove patch',
+    !!patchBtn && patchBtn.textContent === 'Remove patch');
+  click(window, patchBtn);
+  host20 = nodeById(window, '192.168.1.20');
+  check('detail Remove patch unpatches the node',
+    !host20.classList.contains('patched'));
   window.close();
 
   /* ---- export 2: adversarial scan ---- */
@@ -154,6 +245,23 @@ async function main() {
   check('evil host detail contains zero img/script elements',
     ebody.querySelectorAll('img,script').length === 0);
   w2.close();
+
+  /* ---- export 3: no --from/--to → remediation disabled ---- */
+  var noPath = genExport(['web', '--from-nmap', SAMPLE], 'no-remed.html');
+  var dom3 = await JSDOM.fromFile(noPath, {
+    runScripts: 'dangerously', resources: 'usable', pretendToBeVisual: true
+  });
+  var w3 = dom3.window;
+  await waitFor(function () {
+    return w3.document.querySelectorAll('#graph .node').length > 0;
+  }, 8000, 'no-remed graph renders');
+  check('no --from/--to: patch button disabled',
+    w3.document.getElementById('btn-patch').disabled === true);
+  check('no --from/--to: remediation strip hidden',
+    w3.document.getElementById('remed-strip').hidden === true);
+  check('no --from/--to: path strip hidden',
+    w3.document.getElementById('path-strip').hidden === true);
+  w3.close();
 
   console.log(failures === 0 ? '\nSMOKE OK' : '\nSMOKE FAILED: ' + failures);
   process.exit(failures ? 1 : 0);

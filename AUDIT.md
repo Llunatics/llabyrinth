@@ -1,5 +1,61 @@
 # Audit log — llabyrinth
 
+## Build 1.2.0 — simulator remediasi (llabyss), 18 Nov 2026
+
+Upgrade dari opsi ⭐ 18 Nov (pilihan user 6 Nov yang tertunda sampai
+Llunevie selesai): llabyrinth berubah dari viewer pasif menjadi alat
+latihan blue-team — node/port bisa "ditambal", jalur serangan dan skor
+risiko dihitung ulang.
+
+Yang dibangun:
+
+1. **`--patch NODE` di `paths`/`tree`/`dot`/`web`.** Node yang
+   di-patch keluar dari graf beserta semua edge-nya (bisa diulang /
+   dipisah koma, didedup). Titik masuk & target dilindungi (rc 1 bila
+   ditambal); node tak dikenal ditolak rc 1. `paths --json` menyertakan
+   `patched` + `risk`; `dot` menggambar node ter-patch abu-abu
+   berlabel `(patched)` dengan edge putus-putus.
+2. **Skor risiko 0–100** (`assess_risk`): `round(60 ×
+   reachable/total + 40 × path_factor)`; `path_factor = 0` bila target
+   terisolasi, selain itu `max(0, 1 − (hops−1)/max_depth)`. Rumus
+   didokumentasikan di README dan dicerminkan 1:1 oleh JS ekspor web.
+3. **Simulator interaktif di ekspor web.** Blok `remediation` di model
+   tertanam (source/target/maxDepth/patched + adjacency ruang-tampilan
+   searah model). Tombol *Patch mode* + klik node/port menambal,
+   tombol di panel detail menambal tanpa mode, daftar patch +
+   *Reset patches*. Setiap toggle: BFS ulang di browser, overlay jalur
+   + strip risiko/attack-surface diperbarui. Node subnet dan `+N ports`
+   tidak bisa ditambal (struktural/agregat); melepas patch selalu
+   boleh, termasuk patch yang dimuat dari CLI. Tanpa `--from/--to`,
+   simulator nonaktif (tombol disabled).
+
+Verifikasi (semua di salinan kerja lokal, sebelum push):
+
+- **86/86 unit test** hijau (68 lama + 18 baru: parse `--patch`,
+  jalur berubah/terisolasi, skor risiko corp.json 70 → 61 → 18,
+  CLI keempat subcommand, pemetaan remediasi Nmap, ekspor tanpa
+  `--from/--to`).
+- **jsdom real-click smoke 44/44** hijau (21 lama + 23 baru): klik
+  host di tengah jalur → target terisolasi, risk 74 → 36, surface
+  20/27 → 16/27; unpatch mengembalikan jalur; patch port di luar
+  jalur (risk 74 → 72, surface 19/27, jalur tetap 3 hop); titik masuk
+  & subnet tidak bisa ditambal; reset mengembalikan baseline; tombol
+  Patch di panel detail; ekspor tanpa `--from/--to` menonaktifkan
+  simulator.
+- Satu bug ketemu saat smoke: edge jalur host → subnet tidak
+  ter-highlight (edge tampilan tersimpan sebaliknya, subnet → host).
+  Fix: overlay jalur menandai pasangan dua arah — sama seperti
+  pencocokan dua arah yang sudah ada di sisi Python.
+- Satu inkonsistensi ketemu saat review: node yang di-patch via CLI
+  (mis. subnet) tidak bisa di-unpatch dari browser. Fix: melepas
+  patch selalu diizinkan; yang dibatasi hanya menambah patch baru.
+
+Batasan jujur: skor risiko adalah heuristik latihan (bobot 60/40
+arbitrer, tanpa pembobotan per teknik/relasi); patch adalah simulasi
+di atas graf statis — bukan perubahan nyata di infra. BFS browser
+mengikuti urutan adjacency Python yang diurutkan, jadi jalur awal
+yang dihitung JS sama dengan jalur Python.
+
 ## Audit Minggu 2026-10-25 — pendalaman ekstra (verdict Sabtu sudah final)
 
 Ronde lanjutan untuk repo Web Jumat yang sama (skema 3 build/minggu:

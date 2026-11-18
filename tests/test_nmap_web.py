@@ -12,8 +12,10 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from llabyrinth import (  # noqa: E402
     InfraError,
+    assess_risk,
     build_display,
     import_nmap,
+    patched_adj,
     render_web_html,
     shortest_path,
     build_graph,
@@ -376,6 +378,67 @@ class TestCliNmapWeb(unittest.TestCase):
             model = extract_model(read_text(out))
             self.assertEqual(model["path"]["nodes"][0], "attacker")
             self.assertEqual(model["path"]["nodes"][-1], "dc01")
+
+
+class TestRemediationDisplay(unittest.TestCase):
+    """Blok remediation 1.2.0 di ekspor web (ruang id tampilan)."""
+
+    def test_nmap_remediation_mapping(self):
+        m = import_nmap(SAMPLE)
+        adj = build_graph(m["nodes"], m["edges"])
+        path = shortest_path(adj, "192.168.1.1", "192.168.1.20:3306/tcp")
+        d = build_display(m, path, "192.168.1.1",
+                          "192.168.1.20:3306/tcp", 8, ())
+        r = d["remediation"]
+        self.assertEqual(r["source"], "192.168.1.1")
+        self.assertEqual(r["target"], "192.168.1.20:3306/tcp")
+        self.assertEqual(r["maxDepth"], 8)
+        self.assertEqual(r["patched"], [])
+        # host -> subnet ikut (member-of), subnet -> host, host -> port.
+        self.assertIn("subnet:192.168.1.0/24",
+                      r["adj"]["192.168.1.1"])
+        self.assertIn("192.168.1.20", r["adj"]["subnet:192.168.1.0/24"])
+        self.assertIn("192.168.1.20:3306/tcp", r["adj"]["192.168.1.20"])
+        # Port tidak punya edge balik ke host.
+        self.assertNotIn("192.168.1.20",
+                         r["adj"].get("192.168.1.20:3306/tcp", []))
+
+    def test_nmap_remediation_risk_matches_python(self):
+        """Angka JS (BFS di atas remed.adj) = angka Python."""
+        m = import_nmap(SAMPLE)
+        adj = build_graph(m["nodes"], m["edges"])
+        path = shortest_path(adj, "192.168.1.1", "192.168.1.20:3306/tcp")
+        d = build_display(m, path, "192.168.1.1",
+                          "192.168.1.20:3306/tcp", 8, ())
+        r = d["remediation"]
+        disp_adj = {k: [(x, "") for x in v] for k, v in r["adj"].items()}
+        risk = assess_risk(disp_adj, len(d["nodes"]),
+                           r["source"], r["target"], 8)
+        self.assertEqual(risk, {"reachable": 20, "total": 27,
+                                "hops": 3, "risk": 74})
+        risk = assess_risk(patched_adj(disp_adj, ["192.168.1.20"]),
+                           len(d["nodes"]), r["source"], r["target"], 8)
+        self.assertEqual(risk, {"reachable": 16, "total": 27,
+                                "hops": None, "risk": 36})
+
+    def test_nmap_remediation_prepatched(self):
+        m = import_nmap(SAMPLE)
+        adj = build_graph(m["nodes"], m["edges"])
+        path = shortest_path(adj, "192.168.1.1", "192.168.1.20:3306/tcp")
+        d = build_display(m, path, "192.168.1.1",
+                          "192.168.1.20:3306/tcp", 8,
+                          ["192.168.1.20:80/tcp"])
+        self.assertEqual(d["remediation"]["patched"],
+                         ["192.168.1.20:80/tcp"])
+
+    def test_web_without_from_to_has_no_remediation(self):
+        with tempfile.TemporaryDirectory() as td:
+            out = os.path.join(td, "peta.html")
+            r = run_cli("web", "--from-nmap", SAMPLE, "-o", out)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            model = extract_model(read_text(out))
+            self.assertIsNone(model["remediation"])
+            self.assertIsNone(model["path"])
 
 
 if __name__ == "__main__":
