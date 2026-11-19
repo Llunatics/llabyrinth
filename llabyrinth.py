@@ -685,7 +685,8 @@ def resolve_patches(nodes, patch_args):
     patched = parse_patch_list(patch_args)
     unknown = [p for p in patched if p not in nodes]
     if unknown:
-        raise InfraError("node patch tidak ada di infra: %s" % ", ".join(unknown))
+        raise InfraError("node patch tidak ada di infra: %s"
+                         % ", ".join(_term_safe(u) for u in unknown))
     return patched
 
 
@@ -1070,13 +1071,24 @@ function reachableSet(from, blocked){
   return seen;
 }
 function riskMetrics(){
-  var total = model.nodes.length;
+  /* Total & jangkauan dihitung dalam ruang infra (bukan node tampilan):
+     remed.total = jumlah node infra; node "+N ports" dihitung seberat
+     jumlah service yang dilipatnya, supaya angka ini = assess_risk
+     Python walau ada port terlipat. Ekspor lama tanpa remed.total
+     tetap pakai hitungan tampilan seperti dulu. */
+  var useInfra = (remed.total != null);
+  var total = useInfra ? remed.total : model.nodes.length;
   var reached = reachableSet(remed.source, patched);
+  var nReached = 0;
+  Object.keys(reached).forEach(function(id){
+    var n = byId[id];
+    nReached += (useInfra && n && n.kind === 'more') ? (n.folded || 0) : 1;
+  });
   var res = bfsPath(remed.source, remed.target, patched);
   var hops = res ? res.length - 1 : null;
   var pf = hops === null ? 0 : Math.max(0, 1 - (hops - 1) / remed.maxDepth);
-  var risk = Math.round(60 * (Object.keys(reached).length / total) + 40 * pf);
-  return {reachable:Object.keys(reached).length, total:total, hops:hops, risk:risk, path:res};
+  var risk = Math.round(60 * (nReached / total) + 40 * pf);
+  return {reachable:nReached, total:total, hops:hops, risk:risk, path:res};
 }
 function updatePathOverlay(){
   pathNodes = {}; pathEdges = {};
@@ -1123,7 +1135,7 @@ function patchableReason(id){
   if(remed && id === remed.source) return 'entry point — cannot patch';
   if(remed && id === remed.target) return 'target — cannot patch';
   if(n.kind === 'subnet') return 'subnet container — patch the hosts inside it instead';
-  if(n.kind === 'more') return 'aggregated ports — patch from the host details';
+  if(n.kind === 'more') return 'aggregated ports — cannot patch individually';
   return null;
 }
 function togglePatch(id){
@@ -1564,7 +1576,11 @@ def build_display(model, path=None, source=None, target=None, max_depth=8,
     maxDepth, node yang sudah di-patch, dan adjacency searah model —
     JS memakainya untuk BFS ulang tiap kali node di-patch/unpatch,
     sehingga skor risiko & attack surface di browser selalu sama
-    dengan hitungan Python (assess_risk).
+    dengan hitungan Python (assess_risk). Supaya kesamaan itu tahan
+    terhadap pelipatan port (>30 port/host), blok ini juga membawa
+    total node infra + tiap node "+N ports" membawa jumlah service
+    yang dilipatnya ("folded"); port target jalur selalu digambar
+    walau di luar cap.
     """
     nodes = model["nodes"]
     edges = model["edges"]
@@ -1582,6 +1598,8 @@ def build_display(model, path=None, source=None, target=None, max_depth=8,
                     if details[nid].get("kind") == "host"]
         subnet_keys = sorted({s for hid in host_ids
                               for s in details[hid].get("subnets", [])})
+        more_overflow = {}  # host -> jumlah port terlipat ke "+N ports"
+        more_target_exempted = {}  # host -> target ikut digambar di luar cap
         for key in subnet_keys:
             d_nodes.append({
                 "id": "subnet:" + key, "kind": "subnet",
@@ -1598,12 +1616,20 @@ def build_display(model, path=None, source=None, target=None, max_depth=8,
                 d_edges.append({"from": "subnet:" + key, "to": hid, "rel": ""})
             shown = _sorted_ports(
                 [details[sid]["port"] for sid in rec["serviceIds"]])
+            # Port target jalur serangan selalu digambar, walau di luar
+            # cap — kalau tidak, target remediasi jadi node agregat
+            # "+N ports" dan strip jalur menampilkan itu, bukan portnya.
+            target_sid = (target if (target and target in rec["serviceIds"])
+                          else None)
             overflow = 0
+            target_exempted = False
             for i, port in enumerate(shown):
                 sid = "%s:%s/%s" % (hid, port["portid"], port["protocol"])
-                if i >= WEB_PORT_CAP:
+                if i >= WEB_PORT_CAP and sid != target_sid:
                     overflow += 1
                     continue
+                if i >= WEB_PORT_CAP:
+                    target_exempted = True
                 port_display_id[sid] = sid
                 d_nodes.append({
                     "id": sid, "kind": "port",
@@ -1618,10 +1644,16 @@ def build_display(model, path=None, source=None, target=None, max_depth=8,
                     "id": more_id, "kind": "more",
                     "label": "+%d ports" % overflow, "sub": "",
                     "parent": hid,
+                    # Jumlah service infra yang diwakili node agregat ini;
+                    # JS memakainya supaya attack surface = hitungan Python
+                    # (bukan hitungan node tampilan yang terlipat).
+                    "folded": overflow,
                 })
                 d_edges.append({"from": hid, "to": more_id, "rel": ""})
                 for sid in rec["serviceIds"]:
                     port_display_id.setdefault(sid, more_id)
+            more_overflow[hid] = overflow
+            more_target_exempted[hid] = target_exempted
             # Detail host: tabel port PENUH (tanpa cap).
             d_details[hid] = {
                 "title": label,
@@ -1652,15 +1684,20 @@ def build_display(model, path=None, source=None, target=None, max_depth=8,
                 "links": [{"to": hid, "label": hid} for hid in members],
             }
         for hid in host_ids:
-            rec = details[hid]
-            shown_n = len(rec["serviceIds"])
-            if shown_n > WEB_PORT_CAP:
+            overflow = more_overflow.get(hid, 0)
+            if overflow:
+                if more_target_exempted.get(hid):
+                    note = ("Graph draws at most %d port nodes per host, "
+                            "plus the attack-path target when it would "
+                            "otherwise be folded; the full list is in the "
+                            "host details." % WEB_PORT_CAP)
+                else:
+                    note = ("Graph draws at most %d port nodes per host; "
+                            "the full list is in the host details."
+                            % WEB_PORT_CAP)
                 d_details[hid + "/more"] = {
-                    "title": "+%d more ports" % (shown_n - WEB_PORT_CAP),
-                    "fields": [["Note",
-                                "Graph draws at most %d port nodes per host; "
-                                "the full list is in the host details."
-                                % WEB_PORT_CAP]],
+                    "title": "+%d more ports" % overflow,
+                    "fields": [["Note", note]],
                     "ports": [], "scripts": [],
                     "links": [{"to": hid, "label": "Host " + hid}],
                 }
@@ -1762,7 +1799,8 @@ def build_display(model, path=None, source=None, target=None, max_depth=8,
         if skipped:
             print("llabyrinth: catatan: patch %s dilewati — port-nya "
                   "terlipat ke node '+N ports' di tampilan web"
-                  % ", ".join(skipped), file=sys.stderr)
+                  % ", ".join(_term_safe(s) for s in skipped),
+                  file=sys.stderr)
         # Adjacency ruang-tampilan, searah model (host -> subnet ikut
         # karena member-of; port hanya host -> port, bukan sebaliknya).
         # Diurutkan seperti build_graph supaya BFS JS = BFS Python.
@@ -1782,6 +1820,10 @@ def build_display(model, path=None, source=None, target=None, max_depth=8,
             "maxDepth": max_depth,
             "patched": disp_patched,
             "adj": disp_adj,
+            # Total node infra (bukan node tampilan): JS menghitung attack
+            # surface dalam ruang infra supaya angkanya = assess_risk
+            # Python, walau ada port yang terlipat ke node "+N ports".
+            "total": len(nodes),
         }
 
     meta = model.get("meta") or {}
@@ -1919,7 +1961,8 @@ def cmd_paths(args):
                 indent=2))
         else:
             if patched:
-                print("node di-patch: %s\n" % ", ".join(patched))
+                print("node di-patch: %s\n"
+                      % ", ".join(_term_safe(p) for p in patched))
             print("%d path ditemukan (maks %d hop), terurut dari terpendek:\n" % (len(paths), args.max_depth))
             for i, p in enumerate(paths, 1):
                 print("path %d — %d hop:" % (i, len(p) - 1))
@@ -1944,7 +1987,8 @@ def cmd_paths(args):
         }, indent=2))
     else:
         if patched:
-            print("node di-patch: %s\n" % ", ".join(patched))
+            print("node di-patch: %s\n"
+                  % ", ".join(_term_safe(p) for p in patched))
         print("jalur tercepat: %d hop\n" % (len(path) - 1))
         print(render_path(path))
     return 0
@@ -1962,7 +2006,8 @@ def cmd_tree(args):
     if err is not None:
         return err
     adj = patched_adj(build_graph(nodes, edges), patched)
-    patched_note = ("; node di-patch: " + ", ".join(patched)) if patched else ""
+    patched_note = ("; node di-patch: "
+                    + ", ".join(_term_safe(p) for p in patched)) if patched else ""
     print("peta serangan dari %s (maks %d hop%s):\n"
           % (args.source, args.max_depth, patched_note))
     print("\n".join(reachable_tree(adj, nodes, args.source, args.max_depth)))

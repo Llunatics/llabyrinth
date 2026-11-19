@@ -16,6 +16,7 @@ from llabyrinth import (  # noqa: E402
     build_display,
     import_nmap,
     patched_adj,
+    reachable_nodes,
     render_web_html,
     shortest_path,
     build_graph,
@@ -380,6 +381,50 @@ class TestCliNmapWeb(unittest.TestCase):
             self.assertEqual(model["path"]["nodes"][-1], "dc01")
 
 
+def folded_scan_xml():
+    """Scan sintetis buat kasus pelipatan port: host .20 punya 35 port
+    (target 3306 paling akhir, jadi terlipat tanpa exemption) + host
+    10.0.0.9 tak terjangkau dengan 200 port (membuat risk CLI vs
+    browser berpisah sebelum fix: 40 vs 61)."""
+    def host(ip, mac, name, ports):
+        ps = "".join(
+            '<port protocol="tcp" portid="%d"><state state="open"/>'
+            '<service name="svc%d"/></port>' % (p, p) for p in ports)
+        return ('<host><status state="up"/><address addr="%s" addrtype="ipv4"/>'
+                '<address addr="%s" addrtype="mac"/>'
+                '<hostnames><hostname name="%s" type="PTR"/></hostnames>'
+                '<ports>%s</ports></host>') % (ip, mac, name, ps)
+    ports20 = list(range(1000, 1035))
+    ports20[5] = 3306  # target jadi port terakhir (terlipat tanpa exemption)
+    return ('<?xml version="1.0"?>\n<nmaprun scanner="nmap" version="7.94" '
+            'args="nmap -oX - 192.168.1.0/24 10.0.0.0/24">'
+            + host("192.168.1.1", "AA:BB:CC:00:00:01", "router.lan", [80])
+            + host("192.168.1.20", "AA:BB:CC:00:00:02", "webserver.lan", ports20)
+            + host("10.0.0.9", "AA:BB:CC:00:00:09", "db2.lan",
+                   list(range(2000, 2200)))
+            + '<runstats><finished summary="done"/></runstats></nmaprun>')
+
+
+def js_risk_mirror(display, patched=()):
+    """Hitung ulang risk seperti riskMetrics() di JS ekspor web: total
+    infra dari remediation["total"], node '+N ports' dihitung seberat
+    jumlah service yang dilipatnya."""
+    r = display["remediation"]
+    by_id = {n["id"]: n for n in display["nodes"]}
+    adj = {k: [(x, "") for x in v] for k, v in r["adj"].items()}
+    adj = patched_adj(adj, list(patched))
+    reached = reachable_nodes(adj, r["source"])
+    n_reached = sum(by_id[i].get("folded", 0)
+                    if by_id.get(i, {}).get("kind") == "more" else 1
+                    for i in reached)
+    path = shortest_path(adj, r["source"], r["target"], r["maxDepth"])
+    hops = len(path) - 1 if path else None
+    pf = 0.0 if hops is None else max(0.0, 1.0 - (hops - 1) / r["maxDepth"])
+    risk = round(60 * (n_reached / r["total"]) + 40 * pf)
+    return {"reachable": n_reached, "total": r["total"],
+            "hops": hops, "risk": risk}
+
+
 class TestRemediationDisplay(unittest.TestCase):
     """Blok remediation 1.2.0 di ekspor web (ruang id tampilan)."""
 
@@ -430,6 +475,61 @@ class TestRemediationDisplay(unittest.TestCase):
                           ["192.168.1.20:80/tcp"])
         self.assertEqual(d["remediation"]["patched"],
                          ["192.168.1.20:80/tcp"])
+
+    def test_folded_target_port_is_drawn(self):
+        """Port target yang terlipat tetap digambar (bukan jadi agregat):
+        strip jalur harus menyebut 3306/tcp, bukan '+N ports'."""
+        path = write_tmp(folded_scan_xml())
+        try:
+            m = import_nmap(path)
+            adj = build_graph(m["nodes"], m["edges"])
+            sp = shortest_path(adj, "192.168.1.1", "192.168.1.20:3306/tcp")
+            d = build_display(m, sp, "192.168.1.1",
+                              "192.168.1.20:3306/tcp", 8, ())
+            ids = {n["id"] for n in d["nodes"]}
+            self.assertIn("192.168.1.20:3306/tcp", ids)
+            self.assertEqual(d["remediation"]["target"],
+                             "192.168.1.20:3306/tcp")
+            more = [n for n in d["nodes"] if n["id"] == "192.168.1.20/more"]
+            self.assertEqual(len(more), 1)
+            self.assertEqual(more[0]["folded"], 4)
+            self.assertEqual(more[0]["label"], "+4 ports")
+            # Jalur tampilan berakhir di port target yang asli.
+            self.assertEqual(d["path"]["nodes"][-1],
+                             "192.168.1.20:3306/tcp")
+        finally:
+            os.unlink(path)
+
+    def test_remediation_risk_matches_python_with_folding(self):
+        """Paritas risk CLI vs browser saat ada port terlipat + host tak
+        terjangkau: total infra (241, bukan 69 node tampilan) dan node
+        '+N ports' dihitung seberat lipatannya."""
+        path = write_tmp(folded_scan_xml())
+        try:
+            m = import_nmap(path)
+            adj = build_graph(m["nodes"], m["edges"])
+            sp = shortest_path(adj, "192.168.1.1", "192.168.1.20:3306/tcp")
+            d = build_display(m, sp, "192.168.1.1",
+                              "192.168.1.20:3306/tcp", 8, ())
+            r = d["remediation"]
+            self.assertEqual(r["total"], len(m["nodes"]))
+            self.assertEqual(r["total"], 241)
+            cli = assess_risk(adj, len(m["nodes"]), "192.168.1.1",
+                              "192.168.1.20:3306/tcp", 8)
+            self.assertEqual(cli, {"reachable": 39, "total": 241,
+                                   "hops": 3, "risk": 40})
+            self.assertEqual(js_risk_mirror(d), cli)
+            # Sesudah patch satu port tampil: tetap sama.
+            d2 = build_display(m, sp, "192.168.1.1",
+                               "192.168.1.20:3306/tcp", 8,
+                               ["192.168.1.20:1001/tcp"])
+            cli2 = assess_risk(
+                patched_adj(adj, ["192.168.1.20:1001/tcp"]),
+                len(m["nodes"]), "192.168.1.1", "192.168.1.20:3306/tcp", 8)
+            self.assertEqual(js_risk_mirror(d2, ["192.168.1.20:1001/tcp"]),
+                             cli2)
+        finally:
+            os.unlink(path)
 
     def test_web_without_from_to_has_no_remediation(self):
         with tempfile.TemporaryDirectory() as td:

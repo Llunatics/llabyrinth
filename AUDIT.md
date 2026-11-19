@@ -1,5 +1,77 @@
 # Audit log — llabyrinth
 
+## Audit Kamis 2026-11-19 — ronde audit v1.2.0 (llabyss)
+
+Audit terjadwal untuk build Rabu 18 Nov (commit `735544c`). Basis:
+salinan kerja lokal + verifikasi ulang dari fresh clone GitHub.
+Regresi awal: **86/86 unit test** hijau dan jsdom real-click smoke
+hijau — tapi hitungan smoke yang sebenarnya **43 cek** (bukan 44
+seperti tertulis di catatan build 1.2.0; tidak ada cek yang hilang,
+angkanya saja yang salah hitung).
+
+Kasus adversarial baru yang diuji (fokus fitur `--patch` + simulator):
+
+1. **Skor risiko CLI vs browser berpisah saat port terlipat: TEMUAN,
+   diperbaiki.** `riskMetrics()` di JS memakai `total =
+   model.nodes.length` (node tampilan) sementara `assess_risk`
+   Python memakai total node infra. Begitu satu host punya >30 port,
+   node `+N ports` mengecilkan pembilang dan penyebut di ruang
+   tampilan: scan sintetis (host tak terjangkau 10.0.0.9 dengan 200
+   port) menunjukkan CLI `risk 31, surface 5/207` vs browser `risk
+   38, surface 5/38` — selisih 7 poin untuk scan yang sama, padahal
+   README/AUDIT.md mengklaim angka 1:1. Fix: blok `remediation`
+   membawa `"total"` infra + tiap node `+N ports` membawa `"folded"`
+   (jumlah service yang dilipatnya); JS menghitung attack surface
+   dalam ruang infra (node agregat dihitung seberat lipatannya).
+   Terverifikasi di jsdom nyata: kasus 200-port kini browser `31,
+   5/207` = CLI; scan 35-port `39/39` = CLI; sesudah patch satu port
+   `38/39, risk 88` = CLI; corp.json tetap `13/13, risk 70`.
+2. **Port target yang terlipat jadi node agregat: TEMUAN, diperbaiki.**
+   Bila `--to` menunjuk port di luar cap 30 (mis. 3306 sebagai port
+   ke-36), `to_display(target)` memetakannya ke node `+N ports`:
+   strip jalur berakhir `… → +5 ports`, bukan `3306/tcp`, dan panel
+   detail menyebut agregat itu "target". Fix: port target selalu
+   digambar walau di luar cap (host terkait menggambar 31 node port;
+   judul `+N ports` dan catatannya memakai jumlah lipatan aktual,
+   bukan `total − cap`). Terverifikasi: strip kini `… →
+   webserver.lan → 3306/tcp`, node target ada di DOM.
+3. **Injeksi terminal via id node yang di-patch: TEMUAN, diperbaiki.**
+   Baris `node di-patch: …` di `paths` (dua cabang) dan `tree`, pesan
+   error node patch tak dikenal, dan catatan patch terlipat di `web`
+   mencetak id apa adanya — id berisi `\x1b[31m` + newline lolos
+   mentah ke terminal (byte `033` + baris palsu `FAKE: pwned`
+   terverifikasi via `od -c`). Kelas yang sama dengan yang diperbaiki
+   audit Sabtu 24 Okt, hanya jalur cetak `--patch` yang baru yang
+   luput. Fix: `_term_safe()` di semua situs cetak id patch.
+   (Output JSON dan DOT sudah aman dari dulu.)
+4. **Pesan node `+N ports` menyesatkan: TEMUAN, diperbaiki.**
+   Alasan penolakan patch berbunyi "patch from the host details",
+   padahal panel detail host tidak punya tombol patch per-port —
+   jalan buntu. Sekarang: "aggregated ports — cannot patch
+   individually". Terkait: melepas patch subnet yang dimuat dari CLI
+   tetap memulihkan jalur penuh (Risk 9 → 74), sesuai catatan
+   build; menambal target terlipat tetap ditolak rc 1; menambal
+   port terlipat via CLI dilewati dengan catatan stderr.
+
+Terverifikasi aman (tanpa perubahan): `--patch ""`, `"a,,b"`,
+spasi di sekeliling id, `--patch` berulang, `--all` + `--patch`,
+menambal service node & group node via CLI, dan seluruh vektor
+XSS lama (tidak ada sink string baru — `total`/`folded` berupa
+angka; smoke evil tetap hijau).
+
+Perubahan: 3 tes unit baru + 4 cek smoke baru — suite **89/89**
+hijau (lokal + fresh clone GitHub) dan jsdom smoke **47/47**
+hijau. README: jumlah tes 86 → 89, klarifikasi `total` infra di
+rumus risiko + pengecualian port target dari cap 30.
+
+### Verdict ronde ini
+
+v1.2.0 solid dengan empat lubang yang ditutup: satu inkonsistensi
+angka (risk browser vs CLI), satu tampilan menyesatkan (target
+terlipat), satu sanitasi (kontrol di output `--patch`), dan satu
+pesan mati (alasan patch agregat). Klaim 1:1 angka CLI–browser kini
+benar-benar berlaku, termasuk untuk scan dengan port terlipat.
+
 ## Build 1.2.0 — simulator remediasi (llabyss), 18 Nov 2026
 
 Upgrade dari opsi ⭐ 18 Nov (pilihan user 6 Nov yang tertunda sampai

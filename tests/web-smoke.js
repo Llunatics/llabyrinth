@@ -209,6 +209,64 @@ async function main() {
     !host20.classList.contains('patched'));
   window.close();
 
+  /* ---- export 1b: folded ports — risk parity CLI vs browser ---- */
+  function foldHost(ip, mac, name, ports) {
+    var ps = ports.map(function (p) {
+      return '<port protocol="tcp" portid="' + p + '"><state state="open"/>' +
+        '<service name="svc' + p + '"/></port>';
+    }).join('');
+    return '<host><status state="up"/><address addr="' + ip + '" addrtype="ipv4"/>' +
+      '<address addr="' + mac + '" addrtype="mac"/>' +
+      '<hostnames><hostname name="' + name + '" type="PTR"/></hostnames>' +
+      '<ports>' + ps + '</ports></host>';
+  }
+  var foldPorts20 = [];
+  for (var i = 1000; i < 1035; i++) foldPorts20.push(i);
+  foldPorts20[5] = 3306; // target jadi port terakhir (terlipat tanpa exemption)
+  var foldPorts9 = [];
+  for (var j = 2000; j < 2200; j++) foldPorts9.push(j);
+  var foldXml = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'llab-')), 'fold.xml');
+  fs.writeFileSync(foldXml,
+    '<?xml version="1.0"?><nmaprun scanner="nmap" version="7.94" ' +
+    'args="nmap -oX - 192.168.1.0/24 10.0.0.0/24">' +
+    foldHost('192.168.1.1', 'AA:BB:CC:00:00:01', 'router.lan', [80]) +
+    foldHost('192.168.1.20', 'AA:BB:CC:00:00:02', 'webserver.lan', foldPorts20) +
+    foldHost('10.0.0.9', 'AA:BB:CC:00:00:09', 'db2.lan', foldPorts9) +
+    '<runstats><finished summary="done"/></runstats></nmaprun>');
+  var cliRisk = childProcess.spawnSync('python3',
+    [BIN, 'paths', '--from-nmap', foldXml, '--from', '192.168.1.1',
+     '--to', '192.168.1.20:3306/tcp', '--json'], { encoding: 'utf-8' });
+  if (cliRisk.status !== 0) throw new Error('CLI risk failed: ' + cliRisk.stderr);
+  var cli = JSON.parse(cliRisk.stdout).risk;
+  var foldHtml = genExport(
+    ['web', '--from-nmap', foldXml, '--from', '192.168.1.1',
+     '--to', '192.168.1.20:3306/tcp'], 'fold.html');
+  var foldDom = await JSDOM.fromFile(foldHtml, {
+    runScripts: 'dangerously', resources: 'usable', pretendToBeVisual: true
+  });
+  var fw = foldDom.window;
+  await waitFor(function () {
+    return fw.document.querySelectorAll('#graph .node').length > 0;
+  }, 8000, 'folded graph nodes render');
+  var foldStrip = fw.document.getElementById('remed-text').textContent;
+  var foldPath = fw.document.getElementById('path-strip').textContent;
+  check('folded scan: browser risk/surface = CLI risk/surface',
+    foldStrip.indexOf('Risk ' + cli.risk) !== -1 &&
+    foldStrip.indexOf(cli.reachable + '/' + cli.total) !== -1,
+    foldStrip + ' vs CLI ' + JSON.stringify(cli));
+  check('folded target port is drawn (not swallowed by +N ports)',
+    !!nodeById(fw, '192.168.1.20:3306/tcp'));
+  check('path strip names the real target port, not the aggregate',
+    foldPath.indexOf('3306/tcp') !== -1 &&
+    foldPath.indexOf('+4 ports') === -1,
+    foldPath);
+  var foldMore = nodeById(fw, '192.168.1.20/more');
+  click(fw, foldMore);
+  check('aggregated ports node says it cannot be patched individually',
+    fw.document.getElementById('detail-body').textContent
+      .indexOf('cannot patch individually') !== -1);
+  foldDom.window.close();
+
   /* ---- export 2: adversarial scan ---- */
   var evilXml = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'llab-')), 'evil.xml');
   fs.writeFileSync(evilXml,

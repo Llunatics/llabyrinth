@@ -11,7 +11,7 @@ Attack-path mapper ala BloodHound: dari daftar host, user, grup, dan relasinya, 
 
 - `--patch NODE` di `paths`, `tree`, `dot`, dan `web`: node yang dianggap sudah di-patch (ditambal) dihapus dari graf beserta semua edge-nya — bisa diulang atau dipisah koma (`--patch ws01,ws02`). Titik masuk (`--from`) dan target (`--to`) tidak bisa di-patch; node yang tidak ada ditolak dengan error bersih.
 - Subcommand `web`: **simulator remediasi interaktif** — tombol *Patch mode* lalu klik node/port untuk menambal/melepasnya (atau pakai tombol *Patch this node* di panel detail). Setiap klik menghitung ulang jalur serangan (BFS) di browser: jalur terpendek disorot ulang, dan strip remediasi menampilkan skor risiko, attack surface, dan jumlah node yang di-patch secara live. Node yang di-patch digambar abu-abu dengan garis putus-putus; target yang terisolasi ditandai strip hijau. Tanpa `--from/--to`, simulator nonaktif.
-- Skor risiko (0–100, sama di CLI `--json` dan di browser): `round(60 × reachable/total + 40 × path_factor)`, dengan `reachable` = node yang masih terjangkau attacker dari titik masuk (termasuk titik masuk), `total` = jumlah node, dan `path_factor = 0` bila target terisolasi, selain itu `max(0, 1 − (hops−1)/max_depth)`. `paths --json` kini menyertakan `patched` dan `risk` (`{reachable, total, hops, risk}`).
+- Skor risiko (0–100, sama di CLI `--json` dan di browser): `round(60 × reachable/total + 40 × path_factor)`, dengan `reachable` = node yang masih terjangkau attacker dari titik masuk (termasuk titik masuk), `total` = jumlah node infra (port yang terlipat ke `+N ports` tetap dihitung penuh), dan `path_factor = 0` bila target terisolasi, selain itu `max(0, 1 − (hops−1)/max_depth)`. `paths --json` kini menyertakan `patched` dan `risk` (`{reachable, total, hops, risk}`).
 - `dot` menggambar node yang di-patch abu-abu berlabel `(patched)` dengan edge putus-putus; sorotan jalur dihitung dari graf yang sudah di-patch.
 
 ## Baru di 1.1.0
@@ -148,7 +148,7 @@ attacker
 python3 -m unittest discover -s tests
 ```
 
-86 tes: validasi skema, BFS/DFS path, deteksi cycle, render DOT, end-to-end CLI, regresi audit 1.0 (escaping DOT, dedup tree di batas depth, default max-depth), plus suite 1.1.0 — impor Nmap (host down, IPv6, port filtered/closed, merge MAC, XML rusak/bukan Nmap, XXE, `<table>` bersarang dalam), ekspor web (overlay jalur, escaping JSON, batas node port), regresi audit 1.1.0, sanitasi karakter kontrol untuk output terminal (`tree`/`paths`/`validate`) dan DOT, cap hasil `paths --all`, dan toleransi `extraports` ber-count bukan angka — plus suite 1.2.0: parsing `--patch` (koma/ulang/dedup), jalur berubah & terisolasi setelah patch, skor risiko baseline vs sesudah patch (corp.json 70 → 61 → 18), CLI `--patch` di keempat subcommand, pemetaan remediasi tampilan web untuk impor Nmap (host → subnet dua arah, port tanpa edge balik), dan ekspor tanpa `--from/--to` (remediasi nonaktif).
+89 tes: validasi skema, BFS/DFS path, deteksi cycle, render DOT, end-to-end CLI, regresi audit 1.0 (escaping DOT, dedup tree di batas depth, default max-depth), plus suite 1.1.0 — impor Nmap (host down, IPv6, port filtered/closed, merge MAC, XML rusak/bukan Nmap, XXE, `<table>` bersarang dalam), ekspor web (overlay jalur, escaping JSON, batas node port), regresi audit 1.1.0, sanitasi karakter kontrol untuk output terminal (`tree`/`paths`/`validate`) dan DOT, cap hasil `paths --all`, dan toleransi `extraports` ber-count bukan angka — plus suite 1.2.0: parsing `--patch` (koma/ulang/dedup), jalur berubah & terisolasi setelah patch, skor risiko baseline vs sesudah patch (corp.json 70 → 61 → 18), CLI `--patch` di keempat subcommand, pemetaan remediasi tampilan web untuk impor Nmap (host → subnet dua arah, port tanpa edge balik), dan ekspor tanpa `--from/--to` (remediasi nonaktif) — plus regresi audit Kamis 19 Nov 2026: paritas risk CLI vs browser saat port terlipat, port target selalu digambar walau di luar cap, dan sanitasi karakter kontrol di output `--patch`.
 
 Smoke test klik-sungguhan untuk ekspor web (jsdom, hanya untuk tes — tool-nya sendiri tetap stdlib-only):
 
@@ -170,7 +170,7 @@ node tests/web-smoke.js
 - Graf statis dari satu file — bukan kolektor live (padanannya BloodHound collector).
 - Relasi adalah label bebas; tidak ada pembobotan "biaya" per teknik.
 - Impor Nmap: jalur antar-subnet hanya ada bila ada host multi-homed (MAC sama) yang menjembatani — llabyrinth tidak mengarang routing.
-- Tampilan web menggambar maks 30 node port per host (sisanya diringkas node `+N ports`); tabel detail di panel selalu lengkap. Scan raksasa (ribuan node) menghasilkan HTML beberapa MB dan graf yang berat dirender browser.
+- Tampilan web menggambar maks 30 node port per host (sisanya diringkas node `+N ports`), kecuali port target jalur serangan yang selalu digambar walau di luar cap; tabel detail di panel selalu lengkap. Scan raksasa (ribuan node) menghasilkan HTML beberapa MB dan graf yang berat dirender browser.
 - Output script NSE terstruktur (`<table>`/`<elem>`) diratakan sampai kedalaman 64; yang lebih dalam dilewati.
 - Dua elemen `<host>` dengan IP sama tapi MAC berbeda tidak digabung; detail yang tersimpan adalah elemen terakhir (node service elemen pertama tetap ada di model, tapi tidak digambar di tampilan web).
 

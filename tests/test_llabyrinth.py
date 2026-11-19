@@ -484,6 +484,39 @@ class TestRemediation(unittest.TestCase):
         # Jalur sorotan tidak lagi lewat node yang di-patch.
         self.assertNotIn("color=red", r.stdout)
 
+    def test_cli_patch_evil_id_no_raw_control_bytes(self):
+        """Id patch berisi ESC + newline tidak boleh bocor mentah ke
+        terminal (kelas yang sama dengan injeksi terminal di tree/paths
+        yang diperbaiki audit Sabtu 24 Okt — jalur cetak --patch baru
+        sempat luput)."""
+        evil = "leaf\x1b[31mRED\nFAKE: pwned"
+        data = {"nodes": [
+            {"id": "attacker", "type": "principal"},
+            {"id": evil, "type": "host"},
+            {"id": "dc01", "type": "host"}],
+            "edges": [
+            {"from": "attacker", "to": evil, "rel": "owns"},
+            {"from": "attacker", "to": "dc01", "rel": "owns"}]}
+        path = write_infra(data)
+        try:
+            r = self.run_cli("paths", path, "--from", "attacker",
+                             "--to", "dc01", "--patch", evil)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertNotIn("\x1b", r.stdout)
+            self.assertIn("node di-patch: leaf[31mRED FAKE: pwned",
+                          r.stdout)
+            r = self.run_cli("tree", path, "--from", "attacker",
+                             "--patch", evil)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertNotIn("\x1b", r.stdout)
+            # Pesan error node patch tak dikenal juga disanitasi.
+            r = self.run_cli("paths", path, "--from", "attacker",
+                             "--to", "dc01", "--patch", "hantu\x1b[31m")
+            self.assertEqual(r.returncode, 1)
+            self.assertNotIn("\x1b", r.stderr)
+        finally:
+            os.unlink(path)
+
 
 if __name__ == "__main__":
     unittest.main()
